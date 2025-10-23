@@ -56,3 +56,43 @@
      *password*
      "PBKDF2$SHA256:1000$78578e5a5d63cb06$aa2ae650dc866dc4de4fc3c8f06eddac1abc3011a99402fbc46d7e131fac06d5")
   t)
+
+(rtest:deftest unsupported-kdf
+  (handler-case
+      (crypto:make-kdf :random-name)
+    (crypto:unsupported-kdf () :ok)
+    (:no-error () :error))
+  :ok)
+
+(rtest:deftest pbkdf1-invalid-iteration-count
+  (handler-case
+      (ironclad:derive-key (ironclad:make-kdf 'ironclad:pbkdf1 :digest 'ironclad:sha1)
+                           *password* *salt* -1 24)
+    (type-error () :ok)
+    (:no-error () :error))
+  :ok)
+
+(rtest:deftest pbkdf1-invalid-key-length
+  (handler-case
+      (ironclad:derive-key (ironclad:make-kdf 'ironclad:pbkdf1 :digest 'ironclad:sha1)
+                           *password* *salt* 2048 -1)
+    (type-error () :ok)
+    (:no-error () :error))
+  :ok)
+
+(rtest:deftest pbkdf2-invalid-iteration-count
+  (handler-case
+      (ironclad:derive-key (ironclad:make-kdf 'ironclad:pbkdf2 :digest 'ironclad:sha1)
+                           *password* *salt* -1 24)
+    (type-error () :ok)
+    (:no-error () :error))
+  :ok)
+
+(rtest:deftest pbkdf2-invalid-key-length
+  (handler-case
+      (ironclad:derive-key (ironclad:make-kdf 'ironclad:pbkdf2 :digest 'ironclad:sha1)
+                           *password* *salt* 2048 -1)
+    (type-error () :ok)
+    (:no-error () :error))
+  :ok)
+

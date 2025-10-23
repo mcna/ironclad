@@ -5,9 +5,10 @@
 
 (defclass cipher ()
   ((mode :initarg :mode :accessor mode)
+   (mode-name :reader mode-name)
    (initialized-p :initform nil :accessor initialized-p)))
 
-;;; Block ciphers are denoted by the use of the {8,16}-byte-block-mixin.
+;;; Block ciphers are denoted by the use of the {8,16,32,64,128}-byte-block-mixin.
 (defclass stream-cipher (cipher)
   ())
 
@@ -127,6 +128,15 @@ PLAINTEXT."
 (defclass 16-byte-block-mixin ()
   ())
 
+(defclass 32-byte-block-mixin ()
+  ())
+
+(defclass 64-byte-block-mixin ()
+  ())
+
+(defclass 128-byte-block-mixin ()
+  ())
+
 
 ;;; defining ciphers
 
@@ -176,7 +186,7 @@ PLAINTEXT."
   `(defun ,(intern (format nil "~A-~A" algorithm '#:crypt))
        (context plaintext plaintext-start ciphertext ciphertext-start length)
      (declare (optimize (speed 3) (debug 0) (space 0)))
-     (declare (type (simple-array (unsigned-byte 8) (*)) plaintext ciphertext))
+     (declare (type simple-octet-vector plaintext ciphertext))
      (declare (type index plaintext-start ciphertext-start length))
      ,@body))
 
@@ -254,10 +264,20 @@ cipher or is not a cipher object."))
 (defmethod block-length ((cipher 16-byte-block-mixin))
   16)
 
+(defmethod block-length ((cipher 32-byte-block-mixin))
+  32)
+
+(defmethod block-length ((cipher 64-byte-block-mixin))
+  64)
+
+(defmethod block-length ((cipher 128-byte-block-mixin))
+  128)
+
 (defun list-all-ciphers ()
   (loop for symbol being each external-symbol of (find-package :ironclad)
      if (%find-cipher symbol)
-     collect symbol))
+     collect symbol into ciphers
+     finally (return (sort ciphers #'string<))))
 
 (defun cipher-supported-p (name)
   "Return T if the cipher NAME is supported as an argument to MAKE-CIPHER."
@@ -284,10 +304,7 @@ cipher or is not a cipher object."))
 (defun generate-key-verifier-methods (name key-length-spec)
   (let ((acceptable-key-lengths (acceptable-key-lengths key-length-spec)))
     `(defmethod verify-key ((cipher ,name) (key vector))
-      (unless (equal (array-element-type key)
-                     (upgraded-array-element-type '(unsigned-byte 8)))
-        (error 'type-error :expected-type '(vector (unsigned-byte 8))
-               :datum key))
+      (check-type key (array (unsigned-byte 8) (*)))
       (let ((length (length key)))
         (cond 
           (,(acceptable-key-lengths* key-length-spec) (copy-seq key))

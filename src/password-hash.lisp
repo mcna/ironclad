@@ -4,10 +4,8 @@
 (defun make-random-salt (&optional (size 16))
   "Generate a byte vector of SIZE (default 16) random bytes, suitable
 for use as a password salt."
-  (let ((salt (make-array size :element-type '(unsigned-byte 8))))
-    (dotimes (i size)
-      (setf (aref salt i) (random 256)))
-    salt))
+  (let ((prng (or *prng* (make-prng :fortuna :seed :random))))
+    (random-data size prng)))
 
 (defun pbkdf2-hash-password (password &key (salt (make-random-salt))
                                            (digest 'sha256)
@@ -30,11 +28,12 @@ is called to generate a random salt if none is provided), a digest
 function (SHA256 by default), and a number of iterations (1000),
 returns the salt and PBKDF2-derived hash of the password encoded in a
 single ASCII string, suitable for use with PBKDF2-CHECK-PASSWORD."
-  (format nil "PBKDF2$~a:~a$~a$~a" digest iterations
-          (byte-array-to-hex-string salt)
-          (byte-array-to-hex-string
-           (pbkdf2-hash-password password :iterations iterations
-                                 :salt salt :digest digest))))
+  (with-standard-io-syntax
+    (format nil "PBKDF2$~a:~a$~a$~a" digest iterations
+            (byte-array-to-hex-string salt)
+            (byte-array-to-hex-string
+             (pbkdf2-hash-password password :iterations iterations
+                                            :salt salt :digest digest)))))
 
 (defun pbkdf2-check-password (password combined-salt-and-digest)
   "Given a PASSWORD byte vector and a combined salt and digest string

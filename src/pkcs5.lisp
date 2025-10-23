@@ -28,8 +28,8 @@
     kdf))
 
 (defmethod derive-key ((kdf pbkdf1) passphrase salt iteration-count key-length)
-  (unless (plusp iteration-count)
-    (error 'invalid-iteration-count))
+  (check-type iteration-count (integer 1 *))
+  (check-type key-length (integer 1 *))
   (loop with digest = (kdf-digest kdf)
      with digest-length = (digest-length digest)
      with key = (make-array 20 :element-type '(unsigned-byte 8))
@@ -49,10 +49,8 @@
 ;;; PBKDF2, from RFC 2898, section 5.2
 
 (defun pbkdf2-derive-key (digest passphrase salt iteration-count key-length)
-  (unless (plusp iteration-count)
-    (error 'invalid-argument))
-  (unless (plusp (length passphrase))
-    (error 'invalid-argument))
+  (check-type iteration-count (integer 1 *))
+  (check-type key-length (integer 1 *))
   (loop with count = 1
      with hmac = (make-hmac passphrase digest)
      with hmac-length = (digest-length digest)

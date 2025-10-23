@@ -319,7 +319,8 @@ OFFSET into the given (UNSIGNED-BYTE 32) BLOCK."
         for j of-type (integer 0 #.array-dimension-limit)
         from offset to (+ offset 63) by 4
         do
-        (setf (aref block i) (nibbles:ub32ref/le buffer j))))
+        (setf (aref block i) (nibbles:ub32ref/le buffer j)))
+  (values))
 
 (defun fill-block-ub8-be (block buffer offset)
   "Convert a complete 64 (unsigned-byte 8) input vector segment
@@ -366,7 +367,8 @@ behavior."
   (loop for i of-type (integer 0 8) from 0
         for j of-type (integer 0 #.array-dimension-limit)
         from offset to (+ offset 63) by 8
-        do (setf (aref block i) (nibbles:ub64ref/le buffer j))))
+        do (setf (aref block i) (nibbles:ub64ref/le buffer j)))
+  (values))
 
 (defun fill-block-ub8-be/64 (block buffer offset)
   "Convert a complete 128 (unsigned-byte 8) input vector segment
@@ -390,22 +392,57 @@ behavior."
   (loop for i of-type (integer 0 16) from 0
         for j of-type (integer 0 #.array-dimension-limit)
         from offset to (+ offset 127) by 8
-        do (setf (aref block i) (nibbles:ub64ref/be buffer j))))
+        do (setf (aref block i) (nibbles:ub64ref/be buffer j)))
+  (values))
 
-(declaim (inline xor-block))
+(declaim (notinline xor-block))
 (defun xor-block (block-length input-block1 input-block2 input-block2-start
                                output-block output-block-start)
   (declare (type (simple-array (unsigned-byte 8) (*)) input-block1 input-block2 output-block))
   (declare (type index block-length input-block2-start output-block-start))
-  ;; this could be made more efficient by doing things in a word-wise fashion.
-  ;; of course, then we'd have to deal with fun things like boundary
-  ;; conditions and such like.  maybe we could just win by unrolling the
-  ;; loop a bit.  BLOCK-LENGTH should be a constant in all calls to this
-  ;; function; maybe a compiler macro would work well.
-  (dotimes (i block-length)
-    (setf (aref output-block (+ output-block-start i))
-          (logxor (aref input-block1 i)
-                  (aref input-block2 (+ input-block2-start i))))))
+  (cond
+    ;; These are the only architectures with efficient nibbles
+    ;; accessors currently.  Happily, they also do efficient
+    ;; unaligned access, which helps make this block efficient.
+    #+(and sbcl (or x86 x86-64))
+    ((zerop (mod block-length sb-vm:n-word-bytes))
+     (macrolet ((frob (accessor)
+                  `(loop for i from 0 below block-length by ,sb-vm:n-word-bytes
+                         do (setf (,accessor output-block
+                                             (+ output-block-start i))
+                                  (logxor (,accessor input-block1 i)
+                                          (,accessor input-block2
+                                                     (+ input-block2-start i)))))))
+       (ecase sb-vm:n-word-bits
+         (32 (frob nibbles:ub32ref/le))
+         (64 (frob nibbles:ub64ref/le)))))
+    (t
+     (dotimes (i block-length)
+       (setf (aref output-block (+ output-block-start i))
+             (logxor (aref input-block1 i)
+                     (aref input-block2 (+ input-block2-start i))))))))
+
+(define-compiler-macro xor-block (&whole form &environment env
+                                         block-length input-block1
+                                         input-block2 input-block2-start
+                                         output-block output-block-start)
+  (cond
+    ;; These are the only architectures with efficient nibbles
+    ;; accessors currently.
+    #+(and sbcl (or x86 x86-64))
+    ((and (constantp block-length env)
+          (zerop (mod block-length sb-vm:n-word-bytes)))
+     (let ((accessor (ecase sb-vm:n-word-bits
+                       (32 'nibbles:ub32ref/le)
+                       (64 'nibbles:ub64ref/le))))
+       `(loop for i from 0 below ,block-length by ,sb-vm:n-word-bytes
+              do (setf (,accessor ,output-block (+ ,output-block-start i))
+                       (logxor (,accessor ,input-block1 i)
+                               (,accessor ,input-block2
+                                          (+ ,input-block2-start i)))))))
+    (t
+     form)))
+
 
 ;;; a few functions that are useful during compilation
 
@@ -422,3 +459,26 @@ behavior."
          (xsubseq subseq (cdr xsubseq)))
         ((>= i length) subseq)
       (setf (first xsubseq) (first list)))))
+
+;;;
+;;; Partial Evaluation Helpers
+;;;
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun trivial-macroexpand-all (form env)
+    "Trivial and very restricted code-walker used in partial evaluation macros.
+Only supports atoms and function forms, no special forms."
+    (let ((real-form (macroexpand form env)))
+      (cond
+        ((atom real-form)
+         real-form)
+        (t
+         (list* (car real-form)
+                (mapcar #'(lambda (x) (trivial-macroexpand-all x env))
+                        (cdr real-form))))))))
+
+(defmacro dotimes-unrolled ((var limit) &body body &environment env)
+  "Unroll the loop body at compile-time."
+  (loop for x from 0 below (eval (trivial-macroexpand-all limit env))
+        collect `(symbol-macrolet ((,var ,x)) ,@body) into forms
+        finally (return `(progn ,@forms))))

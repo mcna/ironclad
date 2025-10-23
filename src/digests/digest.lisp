@@ -50,7 +50,7 @@
       ;; Otherwise, we have a bignum.
       (t
        (locally (declare (optimize (safety 0))
-                         (type sb-bignum:bignum-type length))
+                         (type bignum length))
          (cond
            ((= (sb-bignum:%bignum-length length) 1)
             (setf (aref block lo) (sb-bignum:%bignum-ref length 0)))
@@ -101,7 +101,7 @@
            '(simple-array (unsigned-byte ,register-bit-size) (,(length registers)))))
        (defun ,digest-fun (regs buffer start)
          (declare (type ,struct-name regs)
-                  (type (simple-array (unsigned-byte 8) (*)) buffer)
+                  (type simple-octet-vector buffer)
                   (type (integer 0 ,(- array-dimension-limit digest-size)) start)
                   ,(burn-baby-burn))
          ,(let ((inlined-unpacking
@@ -129,7 +129,7 @@
        ,@(when (stringp maybe-doc-string)
                `(,maybe-doc-string))
        ,(hold-me-back)
-       (check-type sequence (simple-array (unsigned-byte 8) (*)))
+       (check-type sequence simple-octet-vector)
        (check-type start index)
        (check-type end index)
        ,@(if (stringp maybe-doc-string)
@@ -179,7 +179,7 @@
                                      `(etypecase state
                                         ,@(reverse specs)))))
                (etypecase digest
-                 ((simple-array (unsigned-byte 8) (*))
+                 (simple-octet-vector
                   ;; verify that the buffer is large enough
                   (if (<= digest-size (- (length digest) digest-start))
                       (,inner-fun-name state digest digest-start)
@@ -380,7 +380,8 @@ An error will be signaled if there is insufficient room in DIGEST."))
 (defun list-all-digests ()
   (loop for symbol being each external-symbol of (find-package :ironclad)
      if (digestp symbol)
-     collect symbol))
+     collect symbol into digests
+     finally (return (sort digests #'string<))))
 
 (defun digest-supported-p (name)
   "Return T if the digest NAME is a valid digest name."

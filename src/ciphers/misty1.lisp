@@ -2,6 +2,7 @@
 ;;;; misty1.lisp -- implementation of the MISTY1 block cipher from RFC 2994
 
 (in-package :crypto)
+(in-ironclad-readtable)
 
 
 ;;; required tables
@@ -191,7 +192,7 @@
     ;; fill in the expanded key schedule
     (loop for i from 0 below 16 by 2
           for j from 0 below 8
-          do (setf (aref key-schedule j) (nibbles:ub16ref/be key i)))
+          do (setf (aref key-schedule j) (ub16ref/be key i)))
     ;; scramble
     (dotimes (i 8 key-schedule)
       (setf (aref key-schedule (+ i 8)) (fi (aref key-schedule i)

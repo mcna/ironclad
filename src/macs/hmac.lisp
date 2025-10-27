@@ -3,7 +3,7 @@
 
 (in-package :crypto)
 
-(defclass hmac ()
+(defclass hmac (mac)
   ((inner-digest :reader inner-digest :initarg :inner-digest)
    (outer-digest :reader outer-digest :initarg :outer-digest)))
 
@@ -48,9 +48,9 @@
     (when (> (length key) block-length)
       (setf key (digest-sequence (type-of inner) key)))
     (replace padded-key key)
-    (xor-block block-length padded-key inner-padding 0 inner-padding 0)
+    (xor-block block-length padded-key 0 inner-padding 0 inner-padding 0)
     (update-digest inner inner-padding)
-    (xor-block block-length padded-key outer-padding 0 outer-padding 0)
+    (xor-block block-length padded-key 0 outer-padding 0 outer-padding 0)
     (update-digest outer outer-padding)
     mac))
 
@@ -65,3 +65,8 @@
     (copy-digest (outer-digest hmac) x)
     (update-digest x inner-hash :digest buffer :digest-start buffer-start)
     (produce-digest x :digest buffer :digest-start buffer-start)))
+
+(defmac hmac
+        make-hmac
+        update-hmac
+        hmac-digest)

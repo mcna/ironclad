@@ -1,5 +1,371 @@
 -*- mode: outline -*-
 
+* Version 0.61, released 2024-08-20
+
+** new features
+
+Added the Argon2id key derivation function (without parallelism).
+
+** bug fixes
+
+Fix build with recent SBCL on x86-32.
+
+* Version 0.60, released 2024-02-29
+
+** new features
+
+Added crc32c digest.
+
+** bug fixes
+
+Fixed some undefined behavior for ECL with some compilers.
+
+* Version 0.59, released 2023-07-24
+
+** new features
+
+Functions for elliptic curve operations are exported.
+
+** bug fixes
+
+Fixed optimized Chacha and Salsa functions for newer ECL.
+
+Don't use FORMAT and READ-FROM-STRING to make symbol names.
+
+* Version 0.58, released 2022-10-24
+
+** new features
+
+Added 96-bit nonce support for Chacha.
+
+* Version 0.57, released 2022-02-18
+
+** bug fixes
+
+Fixed SHAKE128 and SHAKE256 when a big output length is requested.
+
+** new features
+
+DIGEST-SEQUENCE can use non-simple arrays.
+
+* Version 0.56, released 2021-09-12
+
+** bug fixes
+
+Fixed access to /dev/urandom in saved cores.
+
+** new features
+
+Experimental: Ironclad split in multiple systems so that users can load only
+what they need.
+
+* Version 0.55, released 2021-03-26
+
+** bug fixes
+
+Fixed compilation with CCL < 1.12 on x86-64.
+
+** new features
+
+GCM and GMAC can use initialization vectors with a size different from 12 bytes.
+
+* Version 0.54, released 2021-01-06
+
+** bug fixes
+
+Fixed SB-VM package lock error with SBCL on arm64 and ppc64.
+
+* Version 0.53, released 2020-12-18
+
+** bug fixes
+
+Fixed compilation with SBCL > 2.0.11 on x86-64.
+
+* Version 0.52, released 2020-11-14
+
+** bug fixes
+
+Fixed authenticated-encryption-mode-supported-p, digest-supported-p,
+mac-supported-p and mode-supported-p functions so that they work correctly with
+either a keyword or a regular symbol as argument.
+
+** improvements
+
+Check for AES-NI and PCLMULQDQ support on x86-64 at run time instead of compile
+time. It should allow a program compiled on a machine supporting these CPU
+instructions to run on a machine that doesn't.
+
+* Version 0.51, released 2020-09-04
+
+** new features
+
+The prime factors (p and q) of the modulus of a RSA private key can be
+retreived using the rsa-key-prime-p and rsa-key-prime-q functions.
+
+Added the Secp256k1, Secp256r1 (a.k.a. NIST P-256), Secp384r1 (a.k.a. NIST
+P-384) and Secp521r1 (a.k.a. NIST P-521) elliptic curves.
+
+Added the generate-signature-nonce method that can be redefined to get
+deterministic signature nonces instead of random ones.
+
+Added the bcrypt and bcrypt-pbkdf key derivation functions.
+
+* Version 0.50, released 2020-07-01
+
+** bug fixes
+
+Fixed default OS PRNG getting stuck in dumped images.
+
+Fixes/workarounds for CCL on ARM32.
+
+** improvements
+
+Open only one stream to /dev/urandom for OS PRNGs on unix-like systems even if
+there are many OS PRNGs instantiated.
+
+* Version 0.49, released 2020-04-14
+
+** bug fixes
+
+Fixed possible file descriptor leak with OS PRNGs.
+
+Fixed compilation with recent SBCL on Windows.
+
+** new features
+
+Public and private key types are now exported, so that users can use them to
+specialize their generic functions.
+
+* Version 0.48, released 2020-01-20
+
+** bug fixes
+
+Fixed compiling with the ':invert' readtable-case.
+
+** new features
+
+Added the '*number-of-miller-rabin-tests*' parameter allowing to configure the
+number of rounds of Miller-Rabin to do in the 'prime-p' function.
+
+** improvements
+
+Some improvements of assembly functions for CCL and ECL.
+
+Improved the probable primality test by adding a Lucas test after the
+Miller-Rabin tests.
+
+* Version 0.47, released 2019-09-11
+
+** bug fixes
+
+Allow running in ECL even if there is no C compiler available.
+
+** new features
+
+Added the HMAC-KDF key derivation function.
+
+* Version 0.46, released 2019-06-04
+
+** bug fixes
+
+Allow the 'digest' parameter of the 'make-kdf' function to be a keyword.
+
+** new features
+
+Added the Argon2d key derivation function (without parallelism).
+
+* Version 0.45, released 2019-02-18
+
+** bug fixes
+
+Pseudo-random number generation is now thread safe, but only when the threads
+are created with the bordeaux-threads library.
+
+** new features
+
+Added the SM3 digest (GM/T 0004-2012).
+
+Added the SM4 cipher (GM/T 0002-2012).
+
+Added the SipHash MAC.
+
+* Version 0.44, released 2018-11-03
+
+** new features
+
+Added the EAX authenticated encryption scheme.
+
+Added support of 256, 512 and 1024 bit block ciphers to CMAC.
+
+Added the Kalyna128, Kalyna256 and Kalyna512 block ciphers (DSTU 7624:2014)
+
+Added the Kupyna and Kupyna/256 digests (DSTU 7564:2014)
+
+Some optimizations for Chacha and Salsa for ECL.
+
+Some optimizations for Poly1305 for ECL.
+
+* Version 0.43, released 2018-09-14
+
+** new features
+
+Added support for PKCS7, ANSI X.923 and ISO 7816-4 padding schemes when
+encrypting or decrypting in ECB or CBC mode.
+
+Added support for CFB, CFB8 and OFB modes to encrypting/decrypting streams.
+
+Added the GMAC authentication code.
+
+Added the GCM (Galois counter mode) and ETM (Encrypt then MAC) authenticated
+encryption schemes.
+
+Some optimizations for CMAC and Poly1305.
+
+Some optimizations for CBC, CFB, CTR and OFB modes.
+
+Some optimizations for Skein.
+
+* Version 0.42, released 2018-08-09
+
+** bug fixes
+
+Fixed loading with SBCL versions newer than 1.4.10
+
+Fixed wrong decryption when using the decrypt-in-place function with a block
+cipher in CFB mode.
+
+** new features
+
+The encrypt-message and decrypt-message methods can be used with ciphers (in
+addition to public or private keys).
+
+Some optimizations for ed25519 and ed448.
+
+* Version 0.41, released 2018-07-30
+
+** new features
+
+Added the original Keccak digests (SHA3 with a different padding).
+
+Added the Streebog digests (GOST R 34.11-2012).
+
+Added the Kuznyechik block cipher (GOST R 34.12-2015).
+
+* Version 0.40, released 2018-06-20
+
+** new features
+
+Add ability to get or set the current position in the key stream for block
+ciphers in CTR mode and stream cipher of the Chacha and Salsa20 families.
+
+* Version 0.39, released 2018-04-19
+
+** bug fixes
+
+Fixed Poly1305 returning a bad MAC when calling produce-mac several times.
+
+Fixed tree-hash returning a bad hash when calling produce-digest several times.
+
+* Version 0.38, released 2018-02-20
+
+** bug fixes
+
+Fixed possible floating point exception when using strong-random with
+a very large integer limit.
+
+Fixed possible array type issue when compiling +ED448-DOM+.
+
+Fixed bug where read-sequence was returning an invalid value for
+encrypting-input-stream and decrypting-input-stream.
+
+** new features
+
+Optimized the Poly1305 MAC.
+
+Add a COMPATIBLE-WITH-KEY keyword to GENERATE-KEY-PAIR for Elgamal
+keys, to generate compatible Elgamal key pairs for a Diffie-Hellman
+exchange more easily.
+
+* Version 0.37, released 2017-11-23
+
+Renamed NULL cipher to XOR. It's a better description of what it does,
+and it allows not having to shadow cl:null.
+
+** new features
+
+Added the Camellia block cipher.
+
+Added the SEED block cipher.
+
+Added the ARIA block cipher.
+
+Added the Sosemanuk stream cipher.
+
+* Version 0.36, released 2017-10-02
+
+** bug fixes
+
+Fixed stream cryptors for Chacha and Salsa20. Some bytes of the
+keystream were ignored after encrypting less than 64 bytes at once.
+
+Fixed tree hash digester. It could sometimes give a wrong result when
+fed data incrementally.
+
+Fixed Arcfour cipher reinitialization.
+
+** new features
+
+Added Gray streams support for ABCL, ECL and Clisp.
+
+Added encrypting streams and decrypting streams. Only stream ciphers
+and block ciphers in CTR mode are supported for the moment.
+
+Added authenticating streams.
+
+* Version 0.35, released 2017-09-06
+
+** bug fixes
+
+Fixed type checking of stream element-type in the
+update-digest-from-stream function.
+
+Fixed possible timing attack in the pbkdf2-check-password function.
+
+** new features
+
+New algorithms:
+ - Cipher: XChacha, XSalsa20
+ - Diffie-Hellman: Curve25519, Curve448, Elgamal
+ - Digest: JH, Groestl
+ - Key derivation function: Argon2i
+ - Message authentication code: Blake2, Blake2s
+ - Signature: Ed448
+
+New default pseudo-random number generator (os-prng) using the
+operating system's PRNG.
+
+Added optimized versions of some common functions for CCL on x86-64
+CPUs and for ECL.
+
+Added optimized AES functions (round keys generation, encryption and
+decryption) for SBCL on x86-64 CPUs with AES-NI support.
+
+Added optimized Blake2s mixing for SBCL on x86-64 CPUs.
+
+Added the constant-time-equal function to check the equality of two
+byte arrays (e.g. passwords, MACs) in constant time.
+
+Added the make-message, destructure-message, make-signature and
+destructure-signature functions allowing to manage the elements of
+messages and signatures returned by encrypt-message and sign-message
+by hand if necessary (e.g. to use a different serialization).
+
+Added the destructure-public-key and destructure-private-key functions
+(e.g. to store keys somewhere and reconstruct them later with
+make-public-key and make-private-key).
+
+Added a unified API for MACs.
+
 * Version 0.34, released 2017-03-07
 
 ** bug fixes
@@ -535,7 +901,7 @@ of the message, not the message itself.  Please also note that the
 DSA signing routine requires *random* numbers; it currently uses
 CL:RANDOM for this purpose, which is probably *NOT* secure enough for
 your needs.  Please make any changes you deem necessary to the signing
-routine to accomodate your security level.
+routine to accommodate your security level.
 
 Feedback is sought on the interface to the routines:
 

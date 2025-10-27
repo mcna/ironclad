@@ -43,7 +43,7 @@
   state)
 
 (defmethod copy-digest ((state tree-hash) &optional copy)
-  (declare (type (or cl:null tree-hash) copy))
+  (check-type copy (or null tree-hash))
   (cond
     (copy
      (copy-digest (tree-hash-state state) (tree-hash-state copy))
@@ -69,7 +69,7 @@ bounded by start and end, which must be numeric bounding-indices."
       :for length fixnum = (- end start)
       :for block-index fixnum = (tree-hash-block-index state) :then 0
       :for block-remaining-length fixnum = (- block-length block-index)
-      :for current-length fixnum = (min block-length length)
+      :for current-length fixnum = (min block-remaining-length length)
       :for new-index fixnum = (+ block-index current-length)
       :for new-start fixnum = (+ start current-length) :do
       (update-digest digest sequence :start start :end new-start)
@@ -90,7 +90,7 @@ bounded by start and end, which must be numeric bounding-indices."
 
 (defun merge-tree-hash-branch (digest branch hash)
   (let ((other-hash (car branch)))
-    (if (cl:null other-hash)
+    (if (null other-hash)
         (cons hash (cdr branch)) ;; happens to work when branch is nil!
         (cons nil (merge-tree-hash-branch
                    digest
@@ -105,24 +105,25 @@ bounded by start and end, which must be numeric bounding-indices."
   (produce-digest digest))
 
 (defmethod produce-digest ((state tree-hash) &key digest (digest-start 0))
-  (when (or (not (zerop (tree-hash-block-index state)))
-            (cl:null (tree-hash-branch state)))
-    (update-tree-hash-branch state))
-  (let* ((internal-state (tree-hash-state state))
-         (result
-          (reduce (lambda (hash2 hash1)
-                    (cond
-                      ((cl:null hash2) hash1)
-                      ((cl:null hash1) hash2)
-                      (t (combine-hash-tree-digests internal-state hash1 hash2))))
-                  (tree-hash-branch state))))
-    (if digest
-        (if (<= (length result) (- (length digest) digest-start))
-            (replace digest result :start1 digest-start)
-            (error 'insufficient-buffer-space
-                   :buffer digest :start digest-start
-                   :length (length result)))
-        result)))
+  (let ((state (copy-digest state)))
+    (when (or (not (zerop (tree-hash-block-index state)))
+              (null (tree-hash-branch state)))
+      (update-tree-hash-branch state))
+    (let* ((internal-state (tree-hash-state state))
+           (result
+             (reduce (lambda (hash2 hash1)
+                       (cond
+                         ((null hash2) hash1)
+                         ((null hash1) hash2)
+                         (t (combine-hash-tree-digests internal-state hash1 hash2))))
+                     (tree-hash-branch state))))
+      (if digest
+          (if (<= (length result) (- (length digest) digest-start))
+              (replace digest result :start1 digest-start)
+              (error 'insufficient-buffer-space
+                     :buffer digest :start digest-start
+                     :length (length result)))
+          result))))
 
 (setf (get 'tree-hash '%digest-length) 24)
 (setf (get 'tree-hash '%make-digest) (symbol-function '%make-tree-hash-digest))

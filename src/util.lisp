@@ -3,21 +3,17 @@
 
 (in-package :crypto)
 
-(declaim (inline byte-array-to-hex-string
-                 hex-string-to-byte-array
-                 ascii-string-to-byte-array))
-
 (defun byte-array-to-hex-string (vector &key (start 0) end (element-type 'base-char))
   "Return a string containing the hexadecimal representation of the
 subsequence of VECTOR between START and END.  ELEMENT-TYPE controls
 the element-type of the returned string."
   (declare (type (vector (unsigned-byte 8)) vector)
            (type fixnum start)
-           (type (or cl:null fixnum) end)
+           (type (or null fixnum) end)
            (optimize (speed 3) (safety 1)))
   (let* ((end (or end (length vector)))
          (length (- end start))
-         (hexdigits #.(coerce "0123456789abcdef" 'simple-base-string)))
+         (hexdigits (load-time-value (coerce "0123456789abcdef" 'simple-base-string) t)))
     (loop with string = (ecase element-type
                           ;; so that the compiler optimization can jump in
                           (base-char (make-string (* length 2)
@@ -27,7 +23,6 @@ the element-type of the returned string."
        for i from start below end
        for j from 0 below (* length 2) by 2
        do (let ((byte (aref vector i)))
-            (declare (optimize (safety 0)))
             (setf (aref string j)
                   (aref hexdigits (ldb (byte 4 4) byte))
                   (aref string (1+ j))
@@ -43,8 +38,10 @@ hexadecimal digits into a byte array."
          (key (make-array length :element-type '(unsigned-byte 8))))
     (declare (type (simple-array (unsigned-byte 8) (*)) key))
     (flet ((char-to-digit (char)
-             (or (position char "0123456789abcdef" :test #'char-equal)
-                 (error "~A is not a hex digit" char))))
+             (or (digit-char-p char 16)
+                 (error 'ironclad-error
+                        :format-control "~A is not a hex digit"
+                        :format-arguments (list char)))))
       (loop for i from 0
             for j from start below end by 2
             do (setf (aref key i)
@@ -57,7 +54,7 @@ hexadecimal digits into a byte array."
 STRING contains any character whose CHAR-CODE is greater than 255."
   (declare (type string string)
            (type fixnum start)
-           (type (or cl:null fixnum) end)
+           (type (or null fixnum) end)
            (optimize (speed 3) (safety 1)))
   (let* ((length (length string))
          (vec (make-array length :element-type '(unsigned-byte 8)))
@@ -65,10 +62,20 @@ STRING contains any character whose CHAR-CODE is greater than 255."
     (loop for i from start below end do
           (let ((byte (char-code (char string i))))
             (unless (< byte 256)
-              (error "~A is not an ASCII character" (char string i)))
+              (error 'ironclad-error
+                     :format-control "~A is not an ASCII character"
+                     :format-arguments (list (char string i))))
             (setf (aref vec i) byte))
           finally (return vec))))
 
-(declaim (notinline byte-array-to-hex-string
-                    hex-string-to-byte-array
-                    ascii-string-to-byte-array))
+(defun constant-time-equal (data1 data2)
+  "Returns T if the elements in DATA1 and DATA2 are identical, NIL otherwise.
+All the elements of DATA1 and DATA2 are compared to prevent timing attacks."
+  (declare (type (simple-array (unsigned-byte 8) (*)) data1 data2)
+           (optimize (speed 3)))
+  (let ((res (if (= (length data1) (length data2)) 0 1)))
+    (declare (type (unsigned-byte 8) res))
+    (loop for d1 across data1
+          for d2 across data2
+          do (setf res (logior res (logxor d1 d2))))
+    (zerop res)))

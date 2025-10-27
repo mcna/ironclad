@@ -18,9 +18,11 @@
   (declare (type salsa20-keystream-buffer buffer))
   (declare (type salsa20-state state))
   (declare (optimize speed))
-  #+(and sbcl x86-64)
+  #+(or (and ecl ironclad-assembly)
+        (and sbcl x86-64 ironclad-assembly))
   (x-salsa-core n-rounds buffer state)
-  #-(and sbcl x86-64)
+  #-(or (and ecl ironclad-assembly)
+        (and sbcl x86-64 ironclad-assembly))
   (let ((x (make-array 16 :element-type '(unsigned-byte 32))))
     (declare (dynamic-extent x))
     (replace x state)
@@ -71,6 +73,9 @@
    (keystream-buffer :reader salsa20-keystream-buffer
                      :initform (make-array 64 :element-type '(unsigned-byte 8))
                      :type salsa20-keystream-buffer)
+   (keystream-buffer-remaining :accessor salsa20-keystream-buffer-remaining
+                               :initform 0
+                               :type (integer 0 64))
    (core-function :reader salsa20-core-function
                   :initarg :core-function
                   :type function))
@@ -111,7 +116,13 @@
                                      &key (key nil key-p)
                                      (initialization-vector nil iv-p)
                                      &allow-other-keys)
+  (declare (ignore initargs key key-p iv-p))
+  (setf (salsa20-keystream-buffer-remaining cipher) 0)
   (when initialization-vector
+    (when (< (length initialization-vector) 8)
+      (error 'invalid-initialization-vector
+             :cipher (class-name (class-of cipher))
+             :block-length 8))
     (let ((state (salsa20-state cipher)))
       (declare (type salsa20-state state))
       (setf (aref state 6) (ub32ref/le initialization-vector 0)
@@ -127,25 +138,40 @@
 (define-stream-cryptor salsa20
   (let ((state (salsa20-state context))
         (keystream-buffer (salsa20-keystream-buffer context))
+        (keystream-buffer-remaining (salsa20-keystream-buffer-remaining context))
         (core-function (salsa20-core-function context)))
-    (declare (type salsa20-state state))
-    (declare (type salsa20-keystream-buffer keystream-buffer))
-    (declare (type function core-function))
+    (declare (type salsa20-state state)
+             (type salsa20-keystream-buffer keystream-buffer)
+             (type (integer 0 64) keystream-buffer-remaining)
+             (type function core-function))
     (unless (zerop length)
-      (loop
-        (funcall core-function keystream-buffer state)
-        (when (zerop (setf (aref state 8)
-                           (mod32+ (aref state 8) 1)))
-          (setf (aref state 9) (mod32+ (aref state 9) 1)))
-        (when (<= length 64)
-          (xor-block length keystream-buffer plaintext plaintext-start
+      (unless (zerop keystream-buffer-remaining)
+        (let ((size (min length keystream-buffer-remaining)))
+          (declare (type (integer 0 64) size))
+          (xor-block size keystream-buffer (- 64 keystream-buffer-remaining)
+                     plaintext plaintext-start
                      ciphertext ciphertext-start)
-          (return-from salsa20-crypt (values)))
-        (xor-block 64 keystream-buffer plaintext plaintext-start
-                   ciphertext ciphertext-start)
-        (decf length 64)
-        (incf ciphertext-start 64)
-        (incf plaintext-start 64)))
+          (decf keystream-buffer-remaining size)
+          (decf length size)
+          (incf ciphertext-start size)
+          (incf plaintext-start size)))
+      (unless (zerop length)
+        (loop
+          (funcall core-function keystream-buffer state)
+          (when (zerop (setf (aref state 8)
+                             (mod32+ (aref state 8) 1)))
+            (setf (aref state 9) (mod32+ (aref state 9) 1)))
+          (when (<= length 64)
+            (xor-block length keystream-buffer 0 plaintext plaintext-start
+                       ciphertext ciphertext-start)
+            (setf (salsa20-keystream-buffer-remaining context) (- 64 length))
+            (return-from salsa20-crypt (values)))
+          (xor-block 64 keystream-buffer 0 plaintext plaintext-start
+                     ciphertext ciphertext-start)
+          (decf length 64)
+          (incf ciphertext-start 64)
+          (incf plaintext-start 64)))
+      (setf (salsa20-keystream-buffer-remaining context) keystream-buffer-remaining))
     (values)))
 
 (defcipher salsa20

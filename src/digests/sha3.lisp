@@ -147,7 +147,9 @@ the content on normal form exit."
                 (type keccak-lane ,@(mapcar #'car bindings)))
        (macrolet ((state-aref (state x y &environment env)
                     (let ((entry (assoc state ',mappings)))
-                      (unless entry (error "Strange: ~S!" state))
+                      (unless entry (error 'ironclad-error
+                                           :format-control "Strange: ~S!"
+                                           :format-arguments (list state)))
                       (aref (cdr entry)
                             (eval (trivial-macroexpand-all x env))
                             (eval (trivial-macroexpand-all y env))))))
@@ -171,7 +173,9 @@ the content on normal form exit."
                 (type keccak-lane ,@(mapcar #'car bindings)))
        (macrolet ((temp-state-aref (temp x y &environment env)
                     (let ((entry (assoc temp ',mappings)))
-                      (unless entry (error "Strange: ~S!" temp))
+                      (unless entry (error 'ironclad-error
+                                           :format-control "Strange: ~S!"
+                                           :format-arguments (list temp)))
                       (aref (cdr entry)
                             (eval (trivial-macroexpand-all x env))
                             (eval (trivial-macroexpand-all y env))))))
@@ -193,7 +197,9 @@ the content on normal form exit."
                 (type keccak-lane ,@(mapcar #'car bindings)))
        (macrolet ((temp-row-aref (row x &environment env)
                     (let ((entry (assoc row ',mappings)))
-                      (unless entry (error "Strange: ~S!" row))
+                      (unless entry (error 'ironclad-error
+                                           :format-control "Strange: ~S!"
+                                           :format-arguments (list row)))
                       (aref (cdr entry)
                             (eval (trivial-macroexpand-all x env))))))
          ,@body))))
@@ -240,14 +246,17 @@ the content on normal form exit."
 ;;; Message Padding for last block
 ;;;
 
-(defun pad-message-to-width (message bit-width is-xof)
+(defun pad-message-to-width (message bit-width padding-type)
   (let* ((message-byte-length (length message))
          (width-bytes (truncate bit-width 8))
          (padding-bytes (- width-bytes (mod message-byte-length width-bytes)))
          (padded-message-byte-length (+ message-byte-length padding-bytes))
          (padded-message (make-array padded-message-byte-length :element-type '(unsigned-byte 8))))
     (replace padded-message message :end2 message-byte-length)
-    (setf (aref padded-message message-byte-length) (if is-xof #x1f #x06))
+    (setf (aref padded-message message-byte-length) (ecase padding-type
+                                                      (:xof #x1f)
+                                                      (:keccak #x01)
+                                                      (:sha3 #x06)))
     (loop for index from (1+ message-byte-length) below padded-message-byte-length
           do (setf (aref padded-message index) #x00))
     (setf (aref padded-message (1- padded-message-byte-length))
@@ -290,6 +299,34 @@ the content on normal form exit."
                                  (output-length 28)))
              (:copier nil)))
 
+(defstruct (keccak
+             (:include sha3)
+             (:constructor %make-keccak-digest
+                           (&aux (bit-rate 576)
+                                 (output-length 64)))
+             (:copier nil)))
+
+(defstruct (keccak/384
+             (:include sha3)
+             (:constructor %make-keccak/384-digest
+                           (&aux (bit-rate 832)
+                                 (output-length 48)))
+             (:copier nil)))
+
+(defstruct (keccak/256
+             (:include sha3)
+             (:constructor %make-keccak/256-digest
+                           (&aux (bit-rate 1088)
+                                 (output-length 32)))
+             (:copier nil)))
+
+(defstruct (keccak/224
+             (:include sha3)
+             (:constructor %make-keccak/224-digest
+                           (&aux (bit-rate 1152)
+                                 (output-length 28)))
+             (:copier nil)))
+
 (defstruct (shake256
              (:include sha3)
              (:constructor %make-shake256 (bit-rate output-length))
@@ -325,12 +362,16 @@ the content on normal form exit."
   state)
 
 (defmethod copy-digest ((state sha3) &optional copy)
-  (declare (type (or cl:null sha3) copy))
+  (check-type copy (or null sha3))
   (let ((copy (if copy
                   copy
                   (etypecase state
                     (shake128 (%make-shake128-digest))
                     (shake256 (%make-shake256-digest))
+                    (keccak/224 (%make-keccak/224-digest))
+                    (keccak/256 (%make-keccak/256-digest))
+                    (keccak/384 (%make-keccak/384-digest))
+                    (keccak (%make-keccak-digest))
                     (sha3/224 (%make-sha3/224-digest))
                     (sha3/256 (%make-sha3/256-digest))
                     (sha3/384 (%make-sha3/384-digest))
@@ -392,42 +433,46 @@ the content on normal form exit."
   (declare (type sha3 state)
            (type (simple-array (unsigned-byte 8) (*)) digest)
            (type integer digest-start)
-           (optimize (speed 3) (safety 0) (space 0) (debug 0)))
-  (let ((is-xof (etypecase state
-                  (shake128 t)
-                  (shake256 t)
-                  (sha3/224 nil)
-                  (sha3/256 nil)
-                  (sha3/384 nil)
-                  (sha3 nil)))
+           (optimize (speed 3) (safety 1) (space 0) (debug 0)))
+  (let ((padding-type (typecase state
+                        (shake128 :xof)
+                        (shake256 :xof)
+                        (keccak/224 :keccak)
+                        (keccak/256 :keccak)
+                        (keccak/384 :keccak)
+                        (keccak :keccak)
+                        (t :sha3)))
         (keccak-state (sha3-state state))
         (buffer (sha3-buffer state))
         (buffer-index (sha3-buffer-index state))
         (bit-rate (sha3-bit-rate state))
-        (output-byte-length (digest-length state))
-        output)
+        (output-byte-length (digest-length state)))
     (declare (type keccak-state keccak-state)
              (type (simple-array (unsigned-byte 8) (200)) buffer)
              (type (integer 0 199) buffer-index)
              (type (integer 0 1600) bit-rate)
-             (type (integer 0 64) output-byte-length))
+             (type integer output-byte-length))
 
     ;; Process remaining data after padding it
     (keccak-state-merge-input keccak-state
                               bit-rate
-                              (pad-message-to-width (subseq buffer 0 buffer-index) bit-rate is-xof)
+                              (pad-message-to-width (subseq buffer 0 buffer-index)
+                                                    bit-rate
+                                                    padding-type)
                               0)
     (keccak-rounds keccak-state)
     (setf (sha3-buffer-index state) 0)
 
     ;; Get output
-    (setf output (keccak-state-extract-output keccak-state output-byte-length))
-    (etypecase digest
-      ((simple-array (unsigned-byte 8) (*))
-       (replace digest output :start1 digest-start :end2 output-byte-length)
-       digest)
-      (cl:null
-       (copy-seq output)))))
+    (let ((output-size 0)
+          (chunk-size (truncate bit-rate 8)))
+      (loop until (= output-size output-byte-length) do
+        (let* ((n (min (- output-byte-length output-size) chunk-size))
+               (output (keccak-state-extract-output keccak-state n)))
+          (replace digest output :start1 (+ digest-start output-size) :end2 n)
+          (incf output-size n)
+          (keccak-rounds keccak-state))))
+    digest))
 
 (define-digest-updater sha3
   (sha3-update state sequence start end))
@@ -435,13 +480,22 @@ the content on normal form exit."
 (define-digest-finalizer ((sha3 64)
                           (sha3/384 48)
                           (sha3/256 32)
-                          (sha3/224 28))
+                          (sha3/224 28)
+                          (keccak 64)
+                          (keccak/384 48)
+                          (keccak/256 32)
+                          (keccak/224 28))
   (sha3-finalize state digest digest-start))
 
 (defdigest sha3 :digest-length 64 :block-length 72)
 (defdigest sha3/384 :digest-length 48 :block-length 104)
 (defdigest sha3/256 :digest-length 32 :block-length 136)
 (defdigest sha3/224 :digest-length 28 :block-length 144)
+
+(defdigest keccak :digest-length 64 :block-length 72)
+(defdigest keccak/384 :digest-length 48 :block-length 104)
+(defdigest keccak/256 :digest-length 32 :block-length 136)
+(defdigest keccak/224 :digest-length 28 :block-length 144)
 
 (defmethod produce-digest ((state shake256) &key digest (digest-start 0))
   (let ((digest-size (digest-length state))

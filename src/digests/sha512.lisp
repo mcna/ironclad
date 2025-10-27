@@ -2,6 +2,7 @@
 ;;; sha512.lisp -- implementation of SHA-384/512 from NIST
 
 (in-package :crypto)
+(in-ironclad-readtable)
 
 (define-digest-registers (sha384 :endian :big :size 8 :digest-registers 6)
   (a #xCBBB9D5DC1059ED8)
@@ -80,7 +81,7 @@
                  collect `(sha512-round ,i ,@(circular-list-subseq vars 0 8)) into forms
                  finally (return `(progn ,@forms))))
         #.(loop for slot in '(a b c d e f g h)
-                collect (let ((regs-accessor (intern (format nil "~A-~A" '#:sha512-regs slot))))
+                collect (let ((regs-accessor (symbolicate '#:sha512-regs- slot)))
                           `(setf (,regs-accessor regs)
                             (mod64+ (,regs-accessor regs) ,slot))) into forms
                 finally (return `(progn ,@forms)))))))
@@ -151,7 +152,7 @@
   state)
 
 (defmethod copy-digest ((state sha512) &optional copy)
-  (declare (type (or cl:null sha512) copy))
+  (check-type copy (or null sha512))
   (let ((copy (if copy
                   copy
                   (etypecase state

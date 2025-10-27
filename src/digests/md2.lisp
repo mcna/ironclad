@@ -2,6 +2,7 @@
 ;;;; md2.lisp -- the MD2 message digest algorithm from RFC 1319
 
 (in-package :crypto)
+(in-ironclad-readtable)
 
 (defconst +md2-permutation+
 #8@(41 46 67 201 162 216 124 1 61 54 84 161 236 240 6
@@ -55,8 +56,8 @@
                             (logxor (aref buffer (+ i offset)) x)))
             (aref checksum i) x))))
 
-(declaim (inline md2regs-digest))
-(defun md2regs-digest (regs buffer start)
+(declaim (inline md2-regs-digest))
+(defun md2-regs-digest (regs buffer start)
   (declare (type (simple-array (unsigned-byte 8) (48)) regs)
            #.(burn-baby-burn))
   (flet ((stuff-registers (buffer start)
@@ -92,7 +93,7 @@
   state)
 
 (defmethod copy-digest ((state md2) &optional copy)
-  (declare (type (or cl:null md2) copy))
+  (check-type copy (or null md2))
   (cond
     (copy
      (replace (md2-regs copy) (md2-regs state))

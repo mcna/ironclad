@@ -2,6 +2,7 @@
 ;;;; crc24.lisp
 
 (in-package :crypto)
+(in-ironclad-readtable)
 
 (declaim (type (simple-array (unsigned-byte 32) (256)) +crc24-table+))
 (defconst +crc24-table+
@@ -61,7 +62,7 @@
   state)
 
 (defmethod copy-digest ((state crc24) &optional copy)
-  (declare (type (or cl:null crc24) copy))
+  (check-type copy (or null crc24))
   (cond
     (copy
      (setf (crc24-crc copy) (crc24-crc state))
@@ -92,11 +93,6 @@
                  (aref digest (+ start 2)) (ldb (byte 8 0) crc))
            digest))
     (declare (inline stuff-state))
-    (etypecase digest
-      ((simple-array (unsigned-byte 8) (*))
-       (stuff-state (crc24-crc state) digest digest-start))
-      (cl:null
-       (stuff-state (crc24-crc state)
-                    (make-array 3 :element-type '(unsigned-byte 8)) 0)))))
+    (stuff-state (crc24-crc state) digest digest-start)))
 
 (defdigest crc24 :digest-length 3 :block-length 1)

@@ -19,19 +19,23 @@
      do (setf result (concatenate '(vector (unsigned-byte 8)) result tmp))
      finally (return (subseq result 0 num-bytes))))
 
+(declaim (notinline oaep-encode))
+;; In the tests, this function is redefined to use a constant value
+;; instead of a random one. Therefore it must not be inlined or the tests
+;; will fail.
 (defun oaep-encode (digest-name message num-bytes &optional label)
   "Return a NUM-BYTES bytes vector containing the OAEP encoding of the MESSAGE
 using the DIGEST-NAME digest (and the optional LABEL octet vector)."
-  (let ((digest-len (digest-length digest-name)))
+  (let* ((digest-name (if (eq digest-name t) :sha1 digest-name))
+         (digest-len (digest-length digest-name)))
     (assert (<= (length message) (- num-bytes (* 2 digest-len) 2)))
     (let* ((digest (make-digest digest-name))
-           (prng (or *prng* (make-prng :fortuna :seed :random)))
            (label (or label (coerce #() '(vector (unsigned-byte 8)))))
            (padding-len (- num-bytes (length message) (* 2 digest-len) 2))
            (padding (make-array padding-len :element-type '(unsigned-byte 8) :initial-element 0))
            (l-hash (digest-sequence digest label))
            (db (concatenate '(vector (unsigned-byte 8)) l-hash padding #(1) message))
-           (seed (random-data digest-len prng))
+           (seed (random-data digest-len))
            (db-mask (mgf digest-name seed (- num-bytes digest-len 1)))
            (masked-db (map '(vector (unsigned-byte 8)) #'logxor db db-mask))
            (seed-mask (mgf digest-name masked-db digest-len))
@@ -41,7 +45,8 @@ using the DIGEST-NAME digest (and the optional LABEL octet vector)."
 (defun oaep-decode (digest-name message &optional label)
   "Return an octet vector containing the data that was encoded in the MESSAGE with OAEP
 using the DIGEST-NAME digest (and the optional LABEL octet vector)."
-  (let ((digest-len (digest-length digest-name)))
+  (let* ((digest-name (if (eq digest-name t) :sha1 digest-name))
+         (digest-len (digest-length digest-name)))
     (assert (>= (length message) (+ (* 2 digest-len) 2)))
     (let* ((digest (make-digest digest-name))
            (label (or label (coerce #() '(vector (unsigned-byte 8)))))
@@ -60,16 +65,19 @@ using the DIGEST-NAME digest (and the optional LABEL octet vector)."
                            finally (return (- i digest-len))))
            (one-byte (elt db (+ digest-len padding-len))))
       (unless (and (zerop zero-byte) (= 1 one-byte) (equalp l-hash1 l-hash2))
-        ;; FIXME: "real" ironclad error needed here
-        (error "OAEP decoding error"))
+        (error 'oaep-decoding-error))
       (subseq db (+ digest-len padding-len 1)))))
 
+(declaim (notinline pss-encode))
+;; In the tests, this function is redefined to use a constant value
+;; instead of a random one. Therefore it must not be inlined or the tests
+;; will fail.
 (defun pss-encode (digest-name message num-bytes)
-  (let ((digest-len (digest-length digest-name)))
+  (let* ((digest-name (if (eq digest-name t) :sha1 digest-name))
+         (digest-len (digest-length digest-name)))
     (assert (>= num-bytes (+ (* 2 digest-len) 2)))
-    (let* ((prng (or *prng* (make-prng :fortuna :seed :random)))
-           (m-hash (digest-sequence digest-name message))
-           (salt (random-data digest-len prng))
+    (let* ((m-hash (digest-sequence digest-name message))
+           (salt (random-data digest-len))
            (m1 (concatenate '(vector (unsigned-byte 8)) #(0 0 0 0 0 0 0 0) m-hash salt))
            (h (digest-sequence digest-name m1))
            (ps (make-array (- num-bytes (* 2 digest-len) 2)
@@ -82,8 +90,9 @@ using the DIGEST-NAME digest (and the optional LABEL octet vector)."
       (concatenate '(vector (unsigned-byte 8)) masked-db h #(188)))))
 
 (defun pss-verify (digest-name message encoded-message)
-  (let ((digest-len (digest-length digest-name))
-        (em-len (length encoded-message)))
+  (let* ((digest-name (if (eq digest-name t) :sha1 digest-name))
+         (digest-len (digest-length digest-name))
+         (em-len (length encoded-message)))
     (assert (>= em-len (+ (* 2 digest-len) 2)))
     (assert (= (elt encoded-message (- em-len 1)) 188))
     (let* ((m-hash (digest-sequence digest-name message))

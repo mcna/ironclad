@@ -4,7 +4,7 @@
 (in-package :crypto)
 
 
-(defclass skein-mac ()
+(defclass skein-mac (mac)
   ((value :accessor skein-value :initarg :value)
    (tweak :accessor skein-tweak :initarg :tweak)
    (cfg :accessor skein-cfg :initarg :cfg)
@@ -18,7 +18,9 @@
   (unless (or (= block-length 32)
               (= block-length 64)
               (= block-length 128))
-    (error "Block length must be 32, 64 or 128 bytes."))
+    (error 'invalid-mac-parameter
+           :mac-name 'skein-mac
+           :message "The block length must be 32, 64 or 128 bytes"))
 
   (make-instance 'skein-mac
                  :key key
@@ -26,7 +28,7 @@
                  :digest-length digest-length))
 
 (defmethod copy-skein-mac ((mac skein-mac) &optional copy)
-  (declare (type (or cl:null skein-mac) copy))
+  (declare (type (or null skein-mac) copy))
   (let ((copy (if copy
                   copy
                   (make-instance 'skein-mac
@@ -113,3 +115,8 @@
         (mac-copy (copy-skein-mac mac)))
     (skein-finalize mac-copy digest 0)
     digest))
+
+(defmac skein-mac
+        make-skein-mac
+        update-skein-mac
+        skein-mac-digest)

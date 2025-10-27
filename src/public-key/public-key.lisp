@@ -3,7 +3,12 @@
 
 (in-package :crypto)
 
-
+
+(defun list-all-key-pair-kinds ()
+  (copy-list '(:curve25519 :curve448 :dsa :ed25519 :ed448 :elgamal
+               :rsa :secp256k1 :secp256r1 :secp384r1 :secp521r1)))
+
+
 ;;; class definitions
 
 (defclass discrete-logarithm-group ()
@@ -11,62 +16,39 @@
    (q :initarg :q :reader group-qval)
    (g :initarg :g :reader group-gval)))
 
-
-;;; generic definitions
 
-(defgeneric make-public-key (kind &key &allow-other-keys)
-  (:documentation "Return a public key of KIND, initialized according to
-the specified keyword arguments."))
+;;; Special variable to force the signature nonce during tests instead of
+;;; generating a random one.
 
-(defgeneric make-private-key (kind &key &allow-other-keys)
-  (:documentation "Return a private key of KIND, initialized according to
-the specified keyword arguments."))
+(defparameter *signature-nonce-for-test* nil)
 
-(defgeneric generate-key-pair (kind &key num-bits &allow-other-keys)
-  (:documentation "Generate a new key pair. The first returned
-value is the secret key, the second value is the public key.
-If KIND is :RSA, :ELGAMAL or :DSA, NUM-BITS must be specified."))
 
-(defgeneric sign-message (key message &key start end &allow-other-keys)
-  (:documentation "Produce a key-specific signature of MESSAGE; MESSAGE is a
-(VECTOR (UNSIGNED-BYTE 8)).  START and END bound the extent of the
-message."))
-
-(defgeneric verify-signature (key message signature &key start end &allow-other-keys)
-  (:documentation "Verify that SIGNATURE is the signature of MESSAGE using
-KEY.  START and END bound the extent of the message."))
-
-(defgeneric encrypt-message (key message &key start end &allow-other-keys)
-  (:documentation "Encrypt MESSAGE with KEY.  START and END bound the extent
-of the message.  Returns a fresh octet vector."))
-
-(defgeneric decrypt-message (key message &key start end &allow-other-keys)
-  (:documentation "Decrypt MESSAGE with KEY.  START and END bound the extent
-of the message.  Returns a fresh octet vector."))
-
-
 ;;; converting from integers to octet vectors
 
 (defun octets-to-integer (octet-vec &key (start 0) end (big-endian t) n-bits)
-  (declare (type (simple-array (unsigned-byte 8) (*)) octet-vec))
+  (declare (type (simple-array (unsigned-byte 8) (*)) octet-vec)
+           (optimize (speed 3) (space 0) (safety 1) (debug 0)))
   (let ((end (or end (length octet-vec))))
-    (multiple-value-bind (complete-bytes extra-bits)
-        (if n-bits
-            (truncate n-bits 8)
-            (values (- end start) 0))
-      (declare (ignorable complete-bytes extra-bits)) ;; TODO: don't ignore the n-bits parameter
-      (if big-endian
-          (do ((j start (1+ j))
-               (sum 0))
-              ((>= j end) sum)
-            (setf sum (+ (aref octet-vec j) (ash sum 8))))
-          (loop for i from (- end start 1) downto 0
-                for j from (1- end) downto start
-                sum (ash (aref octet-vec j) (* i 8)))))))
+    (multiple-value-bind (n-bits n-bytes)
+        (let ((size (- end start)))
+          (if n-bits
+              (values n-bits (min (ceiling n-bits 8) size))
+              (values (* 8 size) size)))
+      (let ((sum (if big-endian
+                     (loop with sum = 0
+                           for i from (- end n-bytes) below end
+                           do (setf sum (+ (ash sum 8) (aref octet-vec i)))
+                           finally (return sum))
+                     (loop for i from start below (+ start n-bytes)
+                           for j from 0 by 8
+                           sum (ash (aref octet-vec i) j)))))
+        (ldb (byte n-bits 0) sum)))))
 
-(defun integer-to-octets (bignum &key (n-bits (integer-length bignum))
-                                (big-endian t))
-  (let* ((n-bytes (ceiling n-bits 8))
+(defun integer-to-octets (bignum &key n-bits (big-endian t))
+  (declare (optimize (speed 3) (space 0) (safety 1) (debug 0)))
+  (let* ((n-bits (or n-bits (integer-length bignum)))
+         (bignum (ldb (byte n-bits 0) bignum))
+         (n-bytes (ceiling n-bits 8))
          (octet-vec (make-array n-bytes :element-type '(unsigned-byte 8))))
     (declare (type (simple-array (unsigned-byte 8) (*)) octet-vec))
     (if big-endian

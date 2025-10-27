@@ -36,10 +36,16 @@
                                     #x1F83D9AB
                                     #x5BE0CD19))))
 
-(defun blake2s-make-initial-state (output-length)
-  (assert (<= output-length 32))
+(defun blake2s-make-initial-state (output-length &optional (key-length 0))
+  (when (> output-length 32)
+    (error 'ironclad-error :format-control "The output length must be at most 32 bytes."))
+  (when (> key-length 32)
+    (error 'ironclad-error :format-control "The key length must be at most 32 bytes."))
   (let ((state (copy-seq +blake2s-iv+)))
-    (setf (aref state 0) (logxor (aref state 0) #x01010000 output-length))
+    (setf (aref state 0) (logxor (aref state 0)
+                                 #x01010000
+                                 (ash key-length 8)
+                                 output-length))
     state))
 
 
@@ -72,6 +78,10 @@
                ;;        ,vd (ror32 (logxor ,vd ,va) 8)
                ;;        ,vc (mod32+ ,vc ,vd)
                ;;        ,vb (ror32 (logxor ,vb ,vc) 7))))
+               #+(and sbcl x86-64 ironclad-assembly)
+               `(multiple-value-setq (,va ,vb ,vc ,vd)
+                  (fast-blake2s-mixing ,va ,vb ,vc ,vd ,x ,y))
+               #-(and sbcl x86-64 ironclad-assembly)
                `(setf ,va (mod32+ (mod32+ ,va ,vb) ,x)
                       ,vd (rol32 (logxor ,vd ,va) 16)
                       ,vc (mod32+ ,vc ,vd)
@@ -107,8 +117,7 @@
 
       ;; Get input data as 32-bit little-endian integers
       (dotimes-unrolled (i 16)
-        (dotimes-unrolled (j 4)
-          (setf (ldb (byte 8 (* j 8)) (aref m i)) (aref input (+ start (* i 4) j)))))
+        (setf (aref m i) (ub32ref/le input (+ start (* i 4)))))
 
       ;; Mixing rounds
       (dotimes-unrolled (i +blake2s-rounds+)
@@ -178,7 +187,7 @@
   state)
 
 (defmethod copy-digest ((state blake2s) &optional copy)
-  (declare (type (or cl:null blake2s) copy))
+  (check-type copy (or null blake2s))
   (let ((copy (if copy
                   copy
                   (etypecase state
@@ -264,14 +273,9 @@
     ;; Get output
     (let ((output (make-array +blake2s-block-size+ :element-type '(unsigned-byte 8) :initial-element 0)))
       (dotimes (i 8)
-        (dotimes (j 4)
-          (setf (aref output (+ (* i 4) j)) (ldb (byte 8 (* j 8)) (aref blake2s-state i)))))
-      (etypecase digest
-        ((simple-array (unsigned-byte 8) (*))
-         (replace digest output :start1 digest-start :end2 digest-length)
-         digest)
-        (cl:null
-         (subseq output 0 digest-length))))))
+        (setf (ub32ref/le output (* i 4)) (aref blake2s-state i)))
+      (replace digest output :start1 digest-start :end2 digest-length)
+      digest)))
 
 (define-digest-updater blake2s
   (blake2s-update state sequence start end nil))

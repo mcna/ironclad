@@ -4,6 +4,7 @@
 ;;; based on a public domain implementation by Paulo Baretto (FIXME!)
 
 (in-package :crypto)
+(in-ironclad-readtable)
 
 (declaim (type (simple-array (unsigned-byte 8) (256))
                alogtable logtable))
@@ -266,7 +267,7 @@
           ((>= i n-rounds))
         (setf (aref offset i) (mul8 2 (aref offset (1- i)))))
       (dotimes (i 4)
-        (setf (mdref tempkeys 0 i) (nibbles:ub32ref/be key (* 4 i))))
+        (setf (mdref tempkeys 0 i) (ub32ref/be key (* 4 i))))
       (do ((i 1 (1+ i)))
           ((>= i (1+ n-rounds)))
         (setf (mdref tempkeys i 0)

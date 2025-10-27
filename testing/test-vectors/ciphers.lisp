@@ -71,12 +71,19 @@
                    (run-test-vector-file ',cipher *cipher-tests*) t) into forms
         finally (return `(progn ,@forms)))
 
+#.(if (boundp '*cipher-stream-tests*)
+      (loop for cipher in (crypto:list-all-ciphers)
+            collect `(rtest:deftest ,(crypto::symbolicate cipher '#:/stream)
+                       (run-test-vector-file ',cipher *cipher-stream-tests*) t)
+              into forms
+         finally (return `(progn ,@forms)))
+      nil)
+
 (rtest:deftest ciphers.crypto-package
   (every #'(lambda (s)
-             (and (eq (symbol-package s) (find-package :ironclad))
-                  (eq (nth-value 1 (find-symbol (symbol-name s)
-                                                (find-package :ironclad)))
-                      :external)))
+             (eq (nth-value 1 (find-symbol (symbol-name s)
+                                           (find-package :ironclad)))
+                 :external))
          (crypto:list-all-ciphers))
   t)
 

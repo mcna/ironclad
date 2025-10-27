@@ -7,16 +7,15 @@
 ;;; defining digest (hash) functions
 
 (eval-when (:compile-toplevel :load-toplevel)
-(defconstant +buffer-size+ (* 128 1024))
+  (defconstant +buffer-size+ (* 128 1024))
+  (defconstant +seq-copy-buffer-size+ 512)
 ) ; EVAL-WHEN
 
 (deftype buffer-index () `(integer 0 (,+buffer-size+)))
 
 (defun update-digest-from-stream (digest stream &key buffer (start 0) end)
   (cond
-    ((let ((element-type (stream-element-type stream)))
-       (or (equal element-type '(unsigned-byte 8))
-           (equal element-type '(integer 0 255))))
+    ((subtypep (stream-element-type stream) '(unsigned-byte 8))
      (flet ((frob (read-buffer start end)
               (loop for last-updated = (read-sequence read-buffer stream
                                                       :start start :end end)
@@ -26,13 +25,44 @@
                  finally (return digest))))
        (if buffer
            (frob buffer start (or end (length buffer)))
-           (let ((buffer (make-array +buffer-size+
-                                     :element-type '(unsigned-byte 8))))
+           (let ((buffer (make-array +buffer-size+ :element-type '(unsigned-byte 8))))
              (declare (dynamic-extent buffer))
              (frob buffer 0 +buffer-size+)))))
     (t
-     (error "Unsupported stream element-type ~S for stream ~S."
-            (stream-element-type stream) stream))))
+     (error 'ironclad-error
+            :format-control "Unsupported stream element-type ~S for stream ~S."
+            :format-arguments (list (stream-element-type stream) stream)))))
+
+(declaim (inline update-digest-from-vector))
+
+#+(or cmucl sbcl)
+(defun update-digest-from-vector (digest vector start end)
+  ;; SBCL and CMUCL have with-array-data, so copying can be avoided even
+  ;; for non-simple vectors.
+  (declare (type (vector (unsigned-byte 8)) vector)
+           (type index start end))
+  (#+cmucl lisp::with-array-data
+   #+sbcl sb-kernel:with-array-data ((data vector) (real-start start) (real-end end))
+   (declare (ignore real-end))
+   (update-digest digest data :start real-start :end (+ real-start (- end start)))))
+
+#-(or cmu sbcl)
+(defun update-digest-from-vector (state vector start end)
+  (declare (optimize speed)
+           (type (vector (unsigned-byte 8)) vector)
+           (type index start end))
+  (if (typep vector 'simple-octet-vector)
+      (update-digest state vector :start start :end end)
+      ;; It's a non-simple vector. Update the digest using a temporary buffer.
+      (let ((buffer (make-array +seq-copy-buffer-size+ :element-type '(unsigned-byte 8))))
+        (declare (dynamic-extent buffer))
+        (loop with offset of-type index = start
+              for length of-type index = (min +seq-copy-buffer-size+ (- end offset))
+              while (< offset end) do
+                (replace buffer vector :start1 0      :end1 length
+                                       :start2 offset :end2 (+ offset length))
+                (update-digest state buffer :start 0 :end length)
+                (incf offset length)))))
 
 ;;; Storing a length at the end of the hashed data is very common and
 ;;; can be a small bottleneck when generating lots of hashes over small
@@ -79,10 +109,10 @@
 ;;; macros for "mid-level" functions
 
 (defmacro define-digest-registers ((digest-name &key (endian :big) (size 4) (digest-registers nil)) &rest registers)
-  (let* ((struct-name (intern (format nil "~A-~A" digest-name '#:regs)))
-         (constructor (intern (format nil "~A-~A" '#:initial struct-name)))
-         (copier (intern (format nil "%~A-~A" '#:copy struct-name)))
-         (digest-fun (intern (format nil "~A~A" digest-name '#:regs-digest)))
+  (let* ((struct-name (symbolicate digest-name '#:-regs))
+         (constructor (symbolicate '#:initial- struct-name))
+         (copier      (symbolicate '#:copy- struct-name))
+         (digest-fun  (symbolicate digest-name '#:-regs-digest))
          (register-bit-size (* size 8))
          (digest-size (* size (or digest-registers
                                   (length registers))))
@@ -105,10 +135,11 @@
                   (type (integer 0 ,(- array-dimension-limit digest-size)) start)
                   ,(burn-baby-burn))
          ,(let ((inlined-unpacking
-                 `(setf ,@(loop for (reg value) in registers
-                             for index from 0 below digest-size by size
-                             nconc `((,ref-fun buffer (+ start ,index))
-                                     (,(intern (format nil "~A-~A-~A" digest-name '#:regs reg)) regs))))))
+                  `(setf ,@(loop for (reg value) in registers
+                                 for index from 0 below digest-size by size
+                                 nconc `((,ref-fun buffer (+ start ,index))
+                                         (,(symbolicate digest-name '#:-regs- reg)
+                                          regs))))))
                (cond
                  #+(and sbcl :little-endian)
                  ((eq endian :little)
@@ -145,7 +176,7 @@
 (defmacro define-digest-finalizer (specs &body body)
   (let* ((single-digest-p (not (consp (car specs))))
          (specs (if single-digest-p (list specs) specs))
-         (inner-fun-name (intern (format nil "%~A-~A-~A" '#:finalize (caar specs) '#:state))))
+         (inner-fun-name (symbolicate '#:finalize- (caar specs) '#:-state)))
     (destructuring-bind (maybe-doc-string &rest rest) body
       (let ((primary-digest (caar specs)))
         `(defmethod produce-digest ((state ,primary-digest)
@@ -162,11 +193,10 @@
                     (macrolet ((finalize-registers (state regs)
                                  (declare (ignorable state))
                                  (let ((clauses
-                                        (loop for (digest-name digest-length) in ',specs
-                                              collect `(,digest-name
-                                                         (,(intern (format nil "~A~A"
-                                                                           digest-name '#:regs-digest))
-                                                                   ,regs digest digest-start)))))
+                                         (loop for (digest-name digest-length) in ',specs
+                                               collect `(,digest-name
+                                                         (,(symbolicate digest-name '#:-regs-digest)
+                                                          ,regs digest digest-start)))))
                                    (if ,single-digest-p
                                        (second (first clauses))
                                        (list* 'etypecase state
@@ -177,17 +207,18 @@
              (let ((digest-size ,(if single-digest-p
                                      (second (first specs))
                                      `(etypecase state
-                                        ,@(reverse specs)))))
+                                        ,@(reverse specs))))
+                   (state-copy (copy-digest state)))
                (etypecase digest
                  (simple-octet-vector
                   ;; verify that the buffer is large enough
                   (if (<= digest-size (- (length digest) digest-start))
-                      (,inner-fun-name state digest digest-start)
+                      (,inner-fun-name state-copy digest digest-start)
                       (error 'insufficient-buffer-space
                              :buffer digest :start digest-start
                              :length digest-size)))
-                 (cl:null
-                  (,inner-fun-name state
+                 (null
+                  (,inner-fun-name state-copy
                                    (make-array digest-size
                                                :element-type '(unsigned-byte 8))
                                    0))))))))))
@@ -252,18 +283,8 @@
 ;;; familiar digest interface below, but these are likely to be slightly
 ;;; more efficient, as well as more obvious about what you're trying to
 ;;; do.
-(defgeneric digest-file (digest-spec pathname &rest args
-                                     &key buffer start end
-                                     digest digest-start)
-  (:documentation "Return the digest of the contents of the file named by PATHNAME using
-the algorithm DIGEST-NAME.
 
-If DIGEST is provided, the digest will be placed into DIGEST starting at
-DIGEST-START.  DIGEST must be a (SIMPLE-ARRAY (UNSIGNED-BYTE 8) (*)).
-An error will be signaled if there is insufficient room in DIGEST.
-
-If BUFFER is provided, the portion of BUFFER between START and END will
-be used to hold data read from the stream."))
+(declaim (notinline make-digest))
 
 (defmethod digest-file ((digest-name cons) pathname &rest kwargs)
   (apply #'digest-file (apply #'make-digest digest-name) pathname kwargs))
@@ -279,19 +300,6 @@ be used to hold data read from the stream."))
                                :buffer buffer :start start :end end)
     (produce-digest state :digest digest :digest-start digest-start)))
 
-(defgeneric digest-stream (digest-spec stream &rest args
-                                       &key buffer start end
-                                       digest digest-start)
-  (:documentation "Return the digest of the contents of STREAM using the algorithm
-DIGEST-NAME.  STREAM-ELEMENT-TYPE of STREAM should be (UNSIGNED-BYTE 8).
-
-If DIGEST is provided, the digest will be placed into DIGEST starting at
-DIGEST-START.  DIGEST must be a (SIMPLE-ARRAY (UNSIGNED-BYTE 8) (*)).
-An error will be signaled if there is insufficient room in DIGEST.
-
-If BUFFER is provided, the portion of BUFFER between START and END will
-be used to hold data read from the stream."))
-
 (defmethod digest-stream ((digest-name cons) stream &rest kwargs)
   (apply #'digest-stream (apply #'make-digest digest-name) stream kwargs))
 (defmethod digest-stream ((digest-name symbol) stream &rest kwargs)
@@ -303,38 +311,15 @@ be used to hold data read from the stream."))
                                :buffer buffer :start start :end end)
   (produce-digest state :digest digest :digest-start digest-start))
 
-(defgeneric digest-sequence (digest-spec sequence &rest args
-                                         &key start end digest digest-start)
-  (:documentation "Return the digest of the subsequence of SEQUENCE
-specified by START and END using the algorithm DIGEST-NAME.  For CMUCL
-and SBCL, SEQUENCE can be any vector with an element-type
-of (UNSIGNED-BYTE 8); for other implementations, SEQUENCE must be a
-(SIMPLE-ARRAY (UNSIGNED-BYTE 8) (*)).
-
-If DIGEST is provided, the digest will be placed into DIGEST starting at
-DIGEST-START.  DIGEST must be a (SIMPLE-ARRAY (UNSIGNED-BYTE 8) (*)).
-An error will be signaled if there is insufficient room in DIGEST."))
-
 (defmethod digest-sequence ((digest-name symbol) sequence &rest kwargs)
   (apply #'digest-sequence (make-digest digest-name) sequence kwargs))
 
 (defmethod digest-sequence (state sequence &key (start 0) end
-                            digest (digest-start 0))
-  #+(or cmu sbcl)
-  (locally
-      (declare (type (vector (unsigned-byte 8)) sequence) (type index start))
-    ;; respect the fill-pointer
-    (let ((end (or end (length sequence))))
-      (declare (type index end))
-      (#+cmu lisp::with-array-data
-       #+sbcl sb-kernel:with-array-data ((data sequence) (real-start start) (real-end end))
-        (declare (ignore real-end))
-        (update-digest state data
-                       :start real-start :end (+ real-start (- end start))))))
-  #-(or cmu sbcl)
-  (let ((real-end (or end (length sequence))))
-    (update-digest state sequence
-                   :start start :end (or real-end (length sequence))))
+                                             digest (digest-start 0))
+  (declare (type index start))
+  (check-type sequence (vector (unsigned-byte 8)))
+  (let ((end (or end (length sequence))))
+    (update-digest-from-vector state sequence start end))
   (produce-digest state :digest digest :digest-start digest-start))
 
 ;;; These four functions represent the common interface for digests in
@@ -353,24 +338,6 @@ An error will be signaled if there is insufficient room in DIGEST."))
     (t
      (error 'type-error :datum digest-name :expected-type 'symbol))))
 
-(defgeneric copy-digest (digester &optional copy)
-  (:documentation "Return a copy of DIGESTER.  If COPY is not NIL, it
-should be of the same type as DIGESTER and will receive the copied data,
-rather than creating a new object.  The copy is a deep copy, not a
-shallow copy as might be returned by COPY-STRUCTURE."))
-
-(defgeneric update-digest (digester thing &key &allow-other-keys)
-  (:documentation "Update the internal state of DIGESTER with THING.
-The exact method is determined by the type of THING."))
-
-(defgeneric produce-digest (digester &key digest digest-start)
-  (:documentation "Return the hash of the data processed by
-DIGESTER so far. This function modifies the internal state of DIGESTER.
-
-If DIGEST is provided, the hash will be placed into DIGEST starting at
-DIGEST-START.  DIGEST must be a (SIMPLE-ARRAY (UNSIGNED-BYTE 8) (*)).
-An error will be signaled if there is insufficient room in DIGEST."))
- 
 
 ;;; the digest-defining macro
 
@@ -380,16 +347,13 @@ An error will be signaled if there is insufficient room in DIGEST."))
 (defun list-all-digests ()
   (loop for symbol being each external-symbol of (find-package :ironclad)
      if (digestp symbol)
-     collect symbol into digests
+     collect (intern (symbol-name symbol) :keyword) into digests
      finally (return (sort digests #'string<))))
 
 (defun digest-supported-p (name)
   "Return T if the digest NAME is a valid digest name."
   (and (symbolp name)
-       (not (cl:null (digestp name)))))
-
-(defgeneric digest-length (digest)
-  (:documentation "Return the number of bytes in a digest generated by DIGEST."))
+       (not (null (digestp (massage-symbol name))))))
 
 (defmethod digest-length ((digest-name symbol))
   (or (digestp (massage-symbol digest-name))
@@ -403,14 +367,10 @@ An error will be signaled if there is insufficient room in DIGEST."))
   (update-digest-from-stream digester stream
                              :buffer buffer :start start :end end))
 
-(defun optimized-maker-name (name)
-  (let ((*package* (find-package :ironclad)))
-    ;; Ironclad gets compiled with *PRINT-CASE* set to :UPCASE; ensure
-    ;; that names we return match what got compiled.n
-    (intern (format nil "%~A-~A-~A"
-                    (symbol-name '#:make)
-                    (symbol-name name)
-                    (symbol-name '#:digest)))))
+(eval-when (:compile-toplevel :load-toplevel)
+  (defun optimized-maker-name (name)
+    (let ((*package* (find-package :ironclad)))
+      (symbolicate '#:%make- name '#:-digest))))
 
 (defmacro defdigest (name &key digest-length block-length)
   (let ((optimized-maker-name (optimized-maker-name name)))

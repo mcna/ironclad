@@ -6,8 +6,6 @@
 
 ;;; Validity of modes for ciphers.
 
-(defgeneric valid-mode-for-cipher-p (cipher mode))
-
 (defmethod valid-mode-for-cipher-p (cipher mode)
   nil)
 
@@ -33,7 +31,7 @@
 (defmethod valid-mode-for-cipher-p ((cipher stream-cipher) mode)
   (or (eq mode :stream) (eq mode 'stream)))
 
-(defun make-mode-for-cipher (cipher mode &optional initialization-vector)
+(defun make-mode-for-cipher (cipher mode &optional initialization-vector padding)
   (let ((block-length (block-length cipher)))
     (flet ((make-extended-mode (mode-class)
              (declare (ignorable mode-class))
@@ -50,10 +48,11 @@
                       :block-length block-length))
              (make-instance mode-class
                             :initialization-vector (copy-seq initialization-vector)
+                            :padding padding
                             :cipher cipher)))
     (case mode
       ((:ecb ecb)
-       (make-instance 'ecb-mode :cipher cipher))
+       (make-instance 'ecb-mode :cipher cipher :padding padding))
       ((:cbc cbc)
        (make-extended-mode 'cbc-mode))
       ((:ofb ofb)
@@ -64,7 +63,8 @@
        (make-extended-mode 'cfb8-mode))
       ((:ctr ctr)
        (make-extended-mode 'ctr-mode))
-      (:stream (make-instance 'stream-mode :cipher cipher))
+      ((:stream stream)
+       (make-instance 'stream-mode :cipher cipher))
       (t
        (error 'unsupported-mode :mode mode))))))
 
@@ -73,11 +73,11 @@
 
 ;;; This is where all the work gets done.
 (defmethod shared-initialize :after ((cipher cipher) slot-names
-                              &rest initargs
-                              &key (key nil key-p) (mode nil mode-p)
-                              (padding nil padding-p)
-                              (initialization-vector nil iv-p)
-                              &allow-other-keys)
+                                     &rest initargs
+                                     &key (key nil key-p) (mode nil mode-p)
+                                       (padding nil padding-p)
+                                       (initialization-vector nil iv-p)
+                                     &allow-other-keys)
   (declare (ignorable padding padding-p iv-p initargs))
   ;; We always want to check that we have a valid key when we initialize
   ;; a cipher (what good is an unkeyed cipher?).  We want to check for
@@ -88,29 +88,14 @@
   (when (and (or (not (initialized-p cipher)) mode-p)
              (not (valid-mode-for-cipher-p cipher mode)))
     ;; FIXME: (CLASS-NAME (CLASS-OF ...)) is not quite right.
-    (error 'unsupported-mode :mode mode
-           :cipher (class-name (class-of cipher))))
+    (error 'unsupported-mode :mode mode :cipher (class-name (class-of cipher))))
   (when (and iv-p
              (not mode-p))
     (setq mode (mode-name cipher)))
-  (when (or mode-p iv-p)
+  (when (or mode-p iv-p padding-p)
     (setf (slot-value cipher 'mode-name) mode)
-    (let ((mode-instance (make-mode-for-cipher cipher mode initialization-vector)))
-      (typecase (mode cipher)
-        #+nil
-        (padded-mode
-         (setf (mode (mode cipher)) mode-instance))
-        (t
-         (setf (mode cipher) mode-instance)))))
-  #+nil
-  (when padding-p
-    (typecase (mode cipher)
-      (padded-mode
-       (setf (padding (mode cipher)) padding))
-      (t
-       (setf (padding (mode cipher))
-             (make-instance 'padded-mode :mode mode :padding padding
-                            :buffer-length (block-length cipher))))))
+    (let ((mode-instance (make-mode-for-cipher cipher mode initialization-vector padding)))
+      (setf (mode cipher) mode-instance)))
   cipher)
 
 (defmethod initialize-instance :after ((cipher cipher)
@@ -142,7 +127,7 @@
      (unless (or (eq mode 'stream) (eq mode :stream))
        (error 'unsupported-mode :cipher (cipher cipher-info) :mode mode))
      (when padding
-       (error "padding is not supported for stream ciphers"))))
+       (error 'ironclad-error :format-control "padding is not supported for stream ciphers"))))
   cipher-info)
 
 (defun make-cipher (name &key key mode initialization-vector padding tweak)

@@ -60,6 +60,44 @@
 
 ;;; cipher testing
 
+(defun cipher-test-guts (cipher-name mode key input output
+                         &optional extra-make-cipher-args)
+  (let ((cipher (apply #'crypto:make-cipher cipher-name
+                       :key key :mode mode
+                       extra-make-cipher-args))
+        (scratch (copy-seq input)))
+    (crypto:encrypt cipher input scratch)
+    (when (mismatch scratch output)
+      (error "encryption failed for ~A on key ~A, input ~A, output ~A"
+             cipher-name key input output))
+    (apply #'reinitialize-instance cipher :key key extra-make-cipher-args)
+    (crypto:decrypt cipher output scratch)
+    (when (mismatch scratch input)
+      (error "decryption failed for ~A on key ~A, input ~A, output ~A"
+             cipher-name key output input))))
+
+#+(or lispworks sbcl cmucl openmcl allegro abcl ecl clisp)
+(defun cipher-stream-test-guts (cipher-name mode key input output
+                                &optional extra-args)
+  (let* ((out-stream (crypto:make-octet-output-stream))
+         (enc-stream (apply #'crypto:make-encrypting-stream
+                            out-stream cipher-name mode key extra-args))
+         (in-stream (crypto:make-octet-input-stream output))
+         (dec-stream (apply #'crypto:make-decrypting-stream
+                            in-stream cipher-name mode key extra-args)))
+    (write-byte (aref input 0) enc-stream)
+    (write-sequence input enc-stream :start 1)
+    (let ((result (crypto:get-output-stream-octets out-stream)))
+      (when (mismatch result output)
+        (error "stream encryption failed for ~A on key ~A, input ~A, output ~A"
+               cipher-name key input output)))
+    (let ((result (copy-seq output)))
+      (setf (aref result 0) (read-byte dec-stream))
+      (read-sequence result dec-stream :start 1)
+      (when (mismatch result input)
+        (error "stream decryption failed for ~A on key ~A, input ~A, output ~A"
+               cipher-name key output input)))))
+
 (defun ecb-mode-test (cipher-name hexkey hexinput hexoutput)
   (cipher-test-guts cipher-name :ecb hexkey hexinput hexoutput))
 
@@ -74,29 +112,47 @@
   (cipher-test-guts cipher-name :stream hexkey hexinput hexoutput
                     (list :initialization-vector hexiv)))
 
+(defun keystream-test (cipher-name key iv keystream)
+  (let* ((mode (if (= 1 (crypto:block-length cipher-name)) :stream :ctr))
+         (cipher (crypto:make-cipher cipher-name :key key :mode mode :initialization-vector iv))
+         (buffer (make-array 1000 :element-type '(unsigned-byte 8) :initial-element 0)))
+    (crypto:keystream-position cipher 100)
+    (crypto:encrypt-in-place cipher buffer :start 100 :end 213)
+    (crypto:keystream-position cipher 500)
+    (crypto:encrypt-in-place cipher buffer :start 500 :end 1000)
+    (crypto:keystream-position cipher 213)
+    (crypto:encrypt-in-place cipher buffer :start 213 :end 500)
+    (crypto:keystream-position cipher 0)
+    (crypto:encrypt-in-place cipher buffer :end 100)
+    (crypto:keystream-position cipher 765)
+    (when (or (/= (crypto:keystream-position cipher) 765)
+              (mismatch buffer keystream))
+      (error "getting/setting key stream position failed for ~A on key ~A" cipher-name key))))
+
+#+(or lispworks sbcl cmucl openmcl allegro abcl ecl clisp)
+(defun stream-mode-test/stream (cipher-name hexkey hexinput hexoutput)
+  (cipher-stream-test-guts cipher-name :stream hexkey hexinput hexoutput))
+
+#+(or lispworks sbcl cmucl openmcl allegro abcl ecl clisp)
+(defun stream-nonce-mode-test/stream (cipher-name hexkey hexiv hexinput hexoutput)
+  (cipher-stream-test-guts cipher-name :stream hexkey hexinput hexoutput
+                           (list :initialization-vector hexiv)))
+
 (defparameter *cipher-tests*
   (list (cons :ecb-mode-test 'ecb-mode-test)
         (cons :ecb-tweak-mode-test 'ecb-tweak-mode-test)
         (cons :stream-mode-test 'stream-mode-test)
-        (cons :stream-nonce-mode-test 'stream-nonce-mode-test)))
+        (cons :stream-nonce-mode-test 'stream-nonce-mode-test)
+        (cons :keystream-test 'keystream-test)))
 
-(defun cipher-test-guts (cipher-name mode key input output
-                         &optional extra-make-cipher-args)
-  (labels ((frob-hex-string (func input)
-             (let ((cipher (apply #'crypto:make-cipher cipher-name
-                                  :key key :mode mode
-                                  extra-make-cipher-args))
-                    (scratch (copy-seq input)))
-               (funcall func cipher input scratch)
-               scratch))
-           (cipher-test (func input output)
-             (not (mismatch (frob-hex-string func input) output))))
-    (unless (cipher-test 'crypto:encrypt input output)
-      (error "encryption failed for ~A on key ~A, input ~A, output ~A"
-             cipher-name key input output))
-    (unless (cipher-test 'crypto:decrypt output input)
-      (error "decryption failed for ~A on key ~A, input ~A, output ~A"
-             cipher-name key output input))))
+#+(or lispworks sbcl cmucl openmcl allegro abcl ecl clisp)
+(defparameter *cipher-stream-tests*
+  (list (cons :ecb-mode-test 'ignore-test)
+        (cons :ecb-tweak-mode-test 'ignore-test)
+        (cons :stream-mode-test 'stream-mode-test/stream)
+        (cons :stream-nonce-mode-test 'stream-nonce-mode-test/stream)
+        (cons :keystream-test 'ignore-test)))
+
 
 ;;; encryption mode consistency checking
 
@@ -120,8 +176,35 @@
         (error "decryption failed for ~A on key ~A, input ~A, output ~A"
                cipher-name key output input)))))
 
+(defun mode-padding-test (mode cipher-name padding key iv input output)
+  (let ((cipher (crypto:make-cipher cipher-name
+                                    :key key
+                                    :mode mode
+                                    :initialization-vector iv
+                                    :padding padding))
+        (buffer1 (make-array (length input) :element-type '(unsigned-byte 8)))
+        (buffer2 (make-array (length output) :element-type '(unsigned-byte 8))))
+    (crypto:encrypt cipher input buffer2 :handle-final-block t)
+    (when (mismatch buffer2 output)
+      (error "encryption failed for ~A on key ~A, input ~A, output ~A"
+             cipher-name key input output))
+    (reinitialize-instance cipher
+                           :key key
+                           :mode mode
+                           :initialization-vector iv
+                           :padding padding)
+    (crypto:decrypt cipher output buffer1 :handle-final-block t)
+    (when (mismatch buffer1 input)
+      (error "decryption failed for ~A on key ~A, input ~A, output ~A"
+             cipher-name key output input))))
+
 (defparameter *mode-tests*
-  (list (cons :mode-test 'mode-test)))
+  (list (cons :mode-test 'mode-test)
+        (cons :mode-padding-test 'ignore-test)))
+
+(defparameter *mode-padding-tests*
+  (list (cons :mode-test 'ignore-test)
+        (cons :mode-padding-test 'mode-padding-test)))
 
 
 ;;; digest testing routines
@@ -141,7 +224,6 @@
        (when (mismatch result expected-digest)
          (error "incremental ~A digest of ~S failed" digest-name input)))))
 
-#+(or sbcl cmucl)
 (defun digest-test/fill-pointer (digest-name octets expected-digest)
   (let* ((input (let ((x (make-array (* 2 (length octets))
                                      :fill-pointer 0
@@ -152,10 +234,13 @@
     (when (mismatch result expected-digest)
       (error "fill-pointer'd ~A digest of ~S failed" digest-name input))))
 
-#+(or lispworks sbcl cmucl openmcl allegro)
+#+(or lispworks sbcl cmucl openmcl allegro abcl ecl clisp)
 (defun digest-test/stream (digest-name input expected-digest)
   (let* ((stream (crypto:make-digesting-stream digest-name)))
-    (write-sequence input stream)
+    (when (plusp (length input))
+      (write-byte (aref input 0) stream)
+      (write-sequence input stream :start 1))
+    (crypto:produce-digest stream) ; Calling produce-digest twice should not give a wrong hash
     (when (mismatch (crypto:produce-digest stream) expected-digest)
       (error "stream-y ~A digest of ~S failed" digest-name input))))
 
@@ -198,13 +283,12 @@
         (cons :digest-bit-test 'ignore-test)
         (cons :xof-digest-test 'ignore-test)))
 
-#+(or sbcl cmucl)
 (defparameter *digest-fill-pointer-tests*
   (list (cons :digest-test 'digest-test/fill-pointer)
         (cons :digest-bit-test 'ignore-test)
         (cons :xof-digest-test 'ignore-test)))
 
-#+(or lispworks sbcl cmucl openmcl allegro)
+#+(or lispworks sbcl cmucl openmcl allegro abcl ecl clisp)
 (defparameter *digest-stream-tests*
   (list (cons :digest-test 'digest-test/stream)
         (cons :digest-bit-test 'ignore-test)
@@ -218,71 +302,66 @@
 
 ;;; mac testing routines
 
-(defun hmac-test (name digest-name key data expected-digest)
-  (declare (ignore name))
-  (let ((hmac (ironclad:make-hmac key digest-name)))
-    (ironclad:update-hmac hmac data)
-    (when (mismatch expected-digest (ironclad:hmac-digest hmac))
-      (error "HMAC/~A failed on key ~A, input ~A, output ~A"
-             digest-name key data expected-digest))
-    (loop
-       initially (reinitialize-instance hmac :key key)
-       for i from 0 below (length data)
-       do (ironclad:update-hmac hmac data :start i :end (1+ i))
-       (ironclad:hmac-digest hmac)
-       finally (when (mismatch expected-digest (ironclad:hmac-digest hmac))
-                 (error "progressive HMAC/~A failed on key ~A, input ~A, output ~A"
-                        digest-name key data expected-digest)))))
+(defun mac-test/base (mac-name key data expected-digest &rest args)
+  (let ((mac (apply #'crypto:make-mac mac-name key args)))
+    (crypto:update-mac mac data)
+    (let ((result (crypto:produce-mac mac)))
+      (when (mismatch result expected-digest)
+        (error "one-shot ~A mac of ~A failed on key ~A, args ~A"
+               mac-name data key args)))))
 
-(defun cmac-test (name cipher-name key data expected-digest)
-  (declare (ignore name))
-  (let ((cmac (ironclad:make-cmac key cipher-name)))
-    (ironclad:update-cmac cmac data)
-    (when (mismatch expected-digest (ironclad:cmac-digest cmac))
-      (error "CMAC/~A failed on key ~A, input ~A, output ~A"
-             cipher-name key data expected-digest))))
+(defun mac-test/incremental (mac-name key data expected-digest &rest args)
+  (loop with length = (length data)
+        with mac = (apply #'crypto:make-mac mac-name key args)
+        for i from 0 below length
+        do (crypto:update-mac mac data :start i :end (1+ i))
+        finally (let ((result (crypto:produce-mac mac)))
+                  (when (mismatch result expected-digest)
+                    (error "incremental ~A mac of ~A failed on key ~A, args ~A"
+                           mac-name data key args)))))
 
-(defun skein-mac-test (name block-length digest-length key data expected-digest)
-  (declare (ignore name))
-  (let ((mac (ironclad:make-skein-mac key
-                                      :block-length block-length
-                                      :digest-length digest-length)))
-    (ironclad:update-skein-mac mac data)
-    (when (mismatch expected-digest (ironclad:skein-mac-digest mac))
-      (error "SKEIN-MAC(~A/~A) failed on key ~A, input ~A, output ~A"
-             block-length digest-length key data expected-digest))
-    (loop
-       initially (reinitialize-instance mac :key key)
-       for i from 0 below (length data)
-       do (progn
-            (ironclad:update-skein-mac mac data :start i :end (1+ i))
-            (ironclad:skein-mac-digest mac))
-       finally (when (mismatch expected-digest (ironclad:skein-mac-digest mac))
-                 (error "progressive SKEIN-MAC(~A/~A) failed on key ~A, input ~A, output ~A"
-                        block-length digest-length key data expected-digest)))))
+#+(or lispworks sbcl cmucl openmcl allegro abcl ecl clisp)
+(defun mac-test/stream (mac-name key data expected-digest &rest args)
+  (let ((stream (apply #'crypto:make-authenticating-stream mac-name key args)))
+    (when (plusp (length data))
+      (write-byte (aref data 0) stream)
+      (write-sequence data stream :start 1))
+    (crypto:produce-mac stream) ; Calling produce-mac twice should not give a wrong MAC
+    (let ((result (crypto:produce-mac stream)))
+      (when (mismatch result expected-digest)
+        (error "stream ~A mac of ~A failed on key ~A, args ~A"
+               mac-name data key args)))))
 
-(defun poly1305-test (name key data expected-digest)
-  (declare (ignore name))
-  (let ((mac (ironclad:make-poly1305 key)))
-    (ironclad:update-poly1305 mac data)
-    (when (mismatch expected-digest (ironclad:poly1305-digest mac))
-      (error "POLY1305 failed on key ~A, input ~A, output ~A"
-             key data expected-digest))
-    (loop
-       initially (reinitialize-instance mac :key key)
-       for i from 0 below (length data)
-       do (progn
-            (ironclad:update-poly1305 mac data :start i :end (1+ i))
-            (ironclad:poly1305-digest mac))
-       finally (when (mismatch expected-digest (ironclad:poly1305-digest mac))
-                 (error "progressive POLY1305 failed on key ~A, input ~A, output ~A"
-                        key data expected-digest)))))
+(defun mac-test/reinitialize-instance (mac-name key data expected-digest &rest args)
+  (let* ((mac (apply #'crypto:make-mac mac-name key args))
+         (result1 (progn
+                    (crypto:update-mac mac data)
+                    (crypto:produce-mac mac))))
+    (declare (ignorable result1))
+    (cond
+      ((typep mac 'ironclad:gmac)
+       (reinitialize-instance mac :key key :initialization-vector (car (last args))))
+      (t
+       (reinitialize-instance mac :key key)))
+    (let ((result2 (progn
+                     (crypto:update-mac mac data)
+                     (crypto:produce-mac mac))))
+      (when (mismatch result2 expected-digest)
+        (error "testing reinitialize-instance ~A mac of ~A failed on key ~A, args ~A"
+               mac-name data key args)))))
 
 (defparameter *mac-tests*
-  (list (cons :hmac-test 'hmac-test)
-        (cons :cmac-test 'cmac-test)
-        (cons :skein-mac-test 'skein-mac-test)
-        (cons :poly1305-test 'poly1305-test)))
+  (list (cons :mac-test 'mac-test/base)))
+
+(defparameter *mac-incremental-tests*
+  (list (cons :mac-test 'mac-test/incremental)))
+
+#+(or lispworks sbcl cmucl openmcl allegro abcl ecl clisp)
+(defparameter *mac-stream-tests*
+  (list (cons :mac-test 'mac-test/stream)))
+
+(defparameter *mac-reinitialize-instance-tests*
+  (list (cons :mac-test 'mac-test/reinitialize-instance)))
 
 
 ;;; PRNG testing routines
@@ -293,19 +372,19 @@
         (num-bytes (length expected-sequence)))
     (loop for (source pool-id event) in entropy
        do (crypto:add-random-event source pool-id event prng))
-    (equalp expected-sequence
-            (crypto:random-data num-bytes prng))))
+    (assert (equalp expected-sequence
+            (crypto:random-data num-bytes prng)))))
 
 (defun generator-test (name cipher seeds expected-sequences)
   (declare (ignore name))
-  (let ((generator (make-instance 'crypto::generator :cipher cipher)))
+  (let ((generator (make-instance 'crypto:fortuna-generator :cipher cipher)))
     (loop for seed in seeds
-       do (crypto::reseed generator (coerce seed '(vector (unsigned-byte 8)))))
+       do (crypto:prng-reseed (coerce seed '(vector (unsigned-byte 8))) generator))
     (every (lambda (sequence)
              (assert (zerop (mod (length sequence) 16)))
-             (equalp sequence
-                     (crypto::generate-blocks generator
-                                              (/ (length sequence) 16))))
+             (assert (equalp sequence
+                             (crypto:random-data (length sequence)
+                                         generator))))
            expected-sequences)))
 
 (defparameter *prng-tests*
@@ -317,9 +396,10 @@
 
 (defun rsa-oaep-encryption-test (name n e d input seed output)
   ;; Redefine oaep-encode to use a defined seed for the test instead of a random one
-  (setf (symbol-function 'ironclad:oaep-encode)
+  (setf (symbol-function 'ironclad::oaep-encode)
         (lambda (digest-name message num-bytes &optional label)
-          (let ((digest-len (ironclad:digest-length digest-name)))
+          (let* ((digest-name (if (eq digest-name t) :sha1 digest-name))
+                 (digest-len (ironclad:digest-length digest-name)))
             (assert (<= (length message) (- num-bytes (* 2 digest-len) 2)))
             (let* ((digest (ironclad:make-digest digest-name))
                    (label (or label (coerce #() '(vector (unsigned-byte 8)))))
@@ -345,13 +425,8 @@
              name n d input output))))
 
 (defun elgamal-encryption-test (name p g x y input k output)
-  ;; Redefine elgamal-generate-k to use a defined K for the test instead of a random one
-  (setf (symbol-function 'ironclad::elgamal-generate-k)
-        (lambda (p)
-          (declare (ignore p))
-          k))
-
-  (let* ((pk (ironclad:make-public-key :elgamal :p p :g g :y y))
+  (let* ((ironclad::*signature-nonce-for-test* k)
+         (pk (ironclad:make-public-key :elgamal :p p :g g :y y))
          (sk (ironclad:make-private-key :elgamal :p p :g g :x x :y y))
          (c (ironclad:encrypt-message pk input))
          (m (ironclad:decrypt-message sk output)))
@@ -364,9 +439,10 @@
 
 (defun rsa-pss-signature-test (name n e d input salt signature)
   ;; Redefine pss-encode to use a defined salt for the test instead of a random one
-  (setf (symbol-function 'ironclad:pss-encode)
+  (setf (symbol-function 'ironclad::pss-encode)
         (lambda (digest-name message num-bytes)
-          (let ((digest-len (ironclad:digest-length digest-name)))
+          (let* ((digest-name (if (eq digest-name t) :sha1 digest-name))
+                 (digest-len (ironclad:digest-length digest-name)))
             (assert (>= num-bytes (+ (* 2 digest-len) 2)))
             (let* ((m-hash (ironclad:digest-sequence digest-name message))
                    (m1 (concatenate '(vector (unsigned-byte 8)) #(0 0 0 0 0 0 0 0) m-hash salt))
@@ -391,13 +467,8 @@
              name n e input signature))))
 
 (defun elgamal-signature-test (name p g x y input k signature)
-  ;; Redefine elgamal-generate-k to use a defined K for the test instead of a random one
-  (setf (symbol-function 'ironclad::elgamal-generate-k)
-        (lambda (p)
-          (declare (ignore p))
-          k))
-
-  (let* ((pk (ironclad:make-public-key :elgamal :p p :g g :y y))
+  (let* ((ironclad::*signature-nonce-for-test* k)
+         (pk (ironclad:make-public-key :elgamal :p p :g g :y y))
          (sk (ironclad:make-private-key :elgamal :p p :g g :x x :y y))
          (s (ironclad:sign-message sk input)))
     (when (mismatch s signature)
@@ -408,13 +479,8 @@
              name p g y input signature))))
 
 (defun dsa-signature-test (name p q g x y input k signature)
-  ;; Redefine dsa-generate-k to use a defined K for the test instead of a random one
-  (setf (symbol-function 'ironclad::dsa-generate-k)
-        (lambda (q)
-          (declare (ignore q))
-          k))
-
-  (let* ((sk (ironclad:make-private-key :dsa :p p :q q :g g :x x :y y))
+  (let* ((ironclad::*signature-nonce-for-test* k)
+         (sk (ironclad:make-private-key :dsa :p p :q q :g g :x x :y y))
          (pk (ironclad:make-public-key :dsa :p p :q q :g g :y y))
          (s (ironclad:sign-message sk input)))
     (when (mismatch s signature)
@@ -435,6 +501,163 @@
       (error "signature verification failed for ~A on pkey ~A, input ~A, signature ~A"
              name pkey input signature))))
 
+(defun ed448-signature-test (name skey pkey input signature)
+  (let* ((sk (ironclad:make-private-key :ed448 :x skey :y pkey))
+         (pk (ironclad:make-public-key :ed448 :y pkey))
+         (s (ironclad:sign-message sk input)))
+    (when (mismatch s signature)
+      (error "signature failed for ~A on skey ~A, input ~A, signature ~A"
+             name skey input signature))
+    (unless (ironclad:verify-signature pk input signature)
+      (error "signature verification failed for ~A on pkey ~A, input ~A, signature ~A"
+             name pkey input signature))))
+
+(defun secp256k1-signature-test (name skey pkey input k signature)
+  (let* ((ironclad::*signature-nonce-for-test* k)
+         (sk (ironclad:make-private-key :secp256k1 :x skey :y pkey))
+         (pk (ironclad:make-public-key :secp256k1 :y pkey))
+         (s (ironclad:sign-message sk input)))
+    (when (mismatch s signature)
+      (error "signature failed for ~A on skey ~A, input ~A, signature ~A"
+             name skey input signature))
+    (unless (ironclad:verify-signature pk input signature)
+      (error "signature verification failed for ~A on pkey ~A, input ~A, signature ~A"
+             name pkey input signature))))
+
+(defun secp256r1-signature-test (name skey pkey input k signature)
+  (let* ((ironclad::*signature-nonce-for-test* k)
+         (sk (ironclad:make-private-key :secp256r1 :x skey :y pkey))
+         (pk (ironclad:make-public-key :secp256r1 :y pkey))
+         (s (ironclad:sign-message sk input)))
+    (when (mismatch s signature)
+      (error "signature failed for ~A on skey ~A, input ~A, signature ~A"
+             name skey input signature))
+    (unless (ironclad:verify-signature pk input signature)
+      (error "signature verification failed for ~A on pkey ~A, input ~A, signature ~A"
+             name pkey input signature))))
+
+(defun secp384r1-signature-test (name skey pkey input k signature)
+  (let* ((ironclad::*signature-nonce-for-test* k)
+         (sk (ironclad:make-private-key :secp384r1 :x skey :y pkey))
+         (pk (ironclad:make-public-key :secp384r1 :y pkey))
+         (s (ironclad:sign-message sk input)))
+    (when (mismatch s signature)
+      (error "signature failed for ~A on skey ~A, input ~A, signature ~A"
+             name skey input signature))
+    (unless (ironclad:verify-signature pk input signature)
+      (error "signature verification failed for ~A on pkey ~A, input ~A, signature ~A"
+             name pkey input signature))))
+
+(defun secp521r1-signature-test (name skey pkey input k signature)
+  (let* ((ironclad::*signature-nonce-for-test* k)
+         (sk (ironclad:make-private-key :secp521r1 :x skey :y pkey))
+         (pk (ironclad:make-public-key :secp521r1 :y pkey))
+         (s (ironclad:sign-message sk input)))
+    (when (mismatch s signature)
+      (error "signature failed for ~A on skey ~A, input ~A, signature ~A"
+             name skey input signature))
+    (unless (ironclad:verify-signature pk input signature)
+      (error "signature verification failed for ~A on pkey ~A, input ~A, signature ~A"
+             name pkey input signature))))
+
+(defun curve25519-dh-test (name skey1 pkey1 skey2 pkey2 shared-secret)
+  (let* ((sk1 (ironclad:make-private-key :curve25519 :x skey1 :y pkey1))
+         (pk1 (ironclad:make-public-key :curve25519 :y pkey1))
+         (sk2 (ironclad:make-private-key :curve25519 :x skey2 :y pkey2))
+         (pk2 (ironclad:make-public-key :curve25519 :y pkey2))
+         (ss1 (ironclad:diffie-hellman sk1 pk2))
+         (ss2 (ironclad:diffie-hellman sk2 pk1)))
+    (when (mismatch ss1 shared-secret)
+      (error "shared secret computation failed for ~A on skey ~A, pkey ~A, secret ~A"
+             name skey1 pkey2 shared-secret))
+    (when (mismatch ss2 shared-secret)
+      (error "shared secret computation failed for ~A on skey ~A, pkey ~A, secret ~A"
+             name skey2 pkey1 shared-secret))))
+
+(defun curve448-dh-test (name skey1 pkey1 skey2 pkey2 shared-secret)
+  (let* ((sk1 (ironclad:make-private-key :curve448 :x skey1 :y pkey1))
+         (pk1 (ironclad:make-public-key :curve448 :y pkey1))
+         (sk2 (ironclad:make-private-key :curve448 :x skey2 :y pkey2))
+         (pk2 (ironclad:make-public-key :curve448 :y pkey2))
+         (ss1 (ironclad:diffie-hellman sk1 pk2))
+         (ss2 (ironclad:diffie-hellman sk2 pk1)))
+    (when (mismatch ss1 shared-secret)
+      (error "shared secret computation failed for ~A on skey ~A, pkey ~A, secret ~A"
+             name skey1 pkey2 shared-secret))
+    (when (mismatch ss2 shared-secret)
+      (error "shared secret computation failed for ~A on skey ~A, pkey ~A, secret ~A"
+             name skey2 pkey1 shared-secret))))
+
+(defun elgamal-dh-test (name p g skey1 pkey1 skey2 pkey2 shared-secret)
+  (let* ((sk1 (ironclad:make-private-key :elgamal :p p :g g :x skey1 :y pkey1))
+         (pk1 (ironclad:make-public-key :elgamal :p p :g g :y pkey1))
+         (sk2 (ironclad:make-private-key :elgamal :p p :g g :x skey2 :y pkey2))
+         (pk2 (ironclad:make-public-key :elgamal :p p :g g :y pkey2))
+         (ss1 (ironclad:diffie-hellman sk1 pk2))
+         (ss2 (ironclad:diffie-hellman sk2 pk1)))
+    (when (mismatch ss1 shared-secret)
+      (error "shared secret computation failed for ~A on skey ~A, pkey ~A, secret ~A"
+             name skey1 pkey2 shared-secret))
+    (when (mismatch ss2 shared-secret)
+      (error "shared secret computation failed for ~A on skey ~A, pkey ~A, secret ~A"
+             name skey2 pkey1 shared-secret))))
+
+(defun secp256k1-dh-test (name skey1 pkey1 skey2 pkey2 shared-secret)
+  (let* ((sk1 (ironclad:make-private-key :secp256k1 :x skey1 :y pkey1))
+         (pk1 (ironclad:make-public-key :secp256k1 :y pkey1))
+         (sk2 (ironclad:make-private-key :secp256k1 :x skey2 :y pkey2))
+         (pk2 (ironclad:make-public-key :secp256k1 :y pkey2))
+         (ss1 (ironclad:diffie-hellman sk1 pk2))
+         (ss2 (ironclad:diffie-hellman sk2 pk1)))
+    (when (mismatch ss1 shared-secret)
+      (error "shared secret computation failed for ~A on skey ~A, pkey ~A, secret ~A"
+             name skey1 pkey2 shared-secret))
+    (when (mismatch ss2 shared-secret)
+      (error "shared secret computation failed for ~A on skey ~A, pkey ~A, secret ~A"
+             name skey2 pkey1 shared-secret))))
+
+(defun secp256r1-dh-test (name skey1 pkey1 skey2 pkey2 shared-secret)
+  (let* ((sk1 (ironclad:make-private-key :secp256r1 :x skey1 :y pkey1))
+         (pk1 (ironclad:make-public-key :secp256r1 :y pkey1))
+         (sk2 (ironclad:make-private-key :secp256r1 :x skey2 :y pkey2))
+         (pk2 (ironclad:make-public-key :secp256r1 :y pkey2))
+         (ss1 (ironclad:diffie-hellman sk1 pk2))
+         (ss2 (ironclad:diffie-hellman sk2 pk1)))
+    (when (mismatch ss1 shared-secret)
+      (error "shared secret computation failed for ~A on skey ~A, pkey ~A, secret ~A"
+             name skey1 pkey2 shared-secret))
+    (when (mismatch ss2 shared-secret)
+      (error "shared secret computation failed for ~A on skey ~A, pkey ~A, secret ~A"
+             name skey2 pkey1 shared-secret))))
+
+(defun secp384r1-dh-test (name skey1 pkey1 skey2 pkey2 shared-secret)
+  (let* ((sk1 (ironclad:make-private-key :secp384r1 :x skey1 :y pkey1))
+         (pk1 (ironclad:make-public-key :secp384r1 :y pkey1))
+         (sk2 (ironclad:make-private-key :secp384r1 :x skey2 :y pkey2))
+         (pk2 (ironclad:make-public-key :secp384r1 :y pkey2))
+         (ss1 (ironclad:diffie-hellman sk1 pk2))
+         (ss2 (ironclad:diffie-hellman sk2 pk1)))
+    (when (mismatch ss1 shared-secret)
+      (error "shared secret computation failed for ~A on skey ~A, pkey ~A, secret ~A"
+             name skey1 pkey2 shared-secret))
+    (when (mismatch ss2 shared-secret)
+      (error "shared secret computation failed for ~A on skey ~A, pkey ~A, secret ~A"
+             name skey2 pkey1 shared-secret))))
+
+(defun secp521r1-dh-test (name skey1 pkey1 skey2 pkey2 shared-secret)
+  (let* ((sk1 (ironclad:make-private-key :secp521r1 :x skey1 :y pkey1))
+         (pk1 (ironclad:make-public-key :secp521r1 :y pkey1))
+         (sk2 (ironclad:make-private-key :secp521r1 :x skey2 :y pkey2))
+         (pk2 (ironclad:make-public-key :secp521r1 :y pkey2))
+         (ss1 (ironclad:diffie-hellman sk1 pk2))
+         (ss2 (ironclad:diffie-hellman sk2 pk1)))
+    (when (mismatch ss1 shared-secret)
+      (error "shared secret computation failed for ~A on skey ~A, pkey ~A, secret ~A"
+             name skey1 pkey2 shared-secret))
+    (when (mismatch ss2 shared-secret)
+      (error "shared secret computation failed for ~A on skey ~A, pkey ~A, secret ~A"
+             name skey2 pkey1 shared-secret))))
+
 (defparameter *public-key-encryption-tests*
   (list (cons :rsa-oaep-encryption-test 'rsa-oaep-encryption-test)
         (cons :elgamal-encryption-test 'elgamal-encryption-test)))
@@ -443,4 +666,121 @@
   (list (cons :rsa-pss-signature-test 'rsa-pss-signature-test)
         (cons :elgamal-signature-test 'elgamal-signature-test)
         (cons :dsa-signature-test 'dsa-signature-test)
-        (cons :ed25519-signature-test 'ed25519-signature-test)))
+        (cons :ed25519-signature-test 'ed25519-signature-test)
+        (cons :ed448-signature-test 'ed448-signature-test)
+        (cons :secp256k1-signature-test 'secp256k1-signature-test)
+        (cons :secp256r1-signature-test 'secp256r1-signature-test)
+        (cons :secp384r1-signature-test 'secp384r1-signature-test)
+        (cons :secp521r1-signature-test 'secp521r1-signature-test)))
+
+(defparameter *public-key-diffie-hellman-tests*
+  (list (cons :curve25519-dh-test 'curve25519-dh-test)
+        (cons :curve448-dh-test 'curve448-dh-test)
+        (cons :elgamal-dh-test 'elgamal-dh-test)
+        (cons :secp256k1-dh-test 'secp256k1-dh-test)
+        (cons :secp256r1-dh-test 'secp256r1-dh-test)
+        (cons :secp384r1-dh-test 'secp384r1-dh-test)
+        (cons :secp521r1-dh-test 'secp521r1-dh-test)))
+
+
+;;; authenticated encryption testing routines
+
+(defun aead-test (mode-name input ad output tag &rest args)
+  (let* ((parameters (case mode-name
+                       ((:gcm gcm crypto:gcm :eax eax crypto:eax)
+                        (list :cipher-name (car args)
+                              :key (cadr args)
+                              :initialization-vector (caddr args)))
+                       ((:etm etm crypto:etm)
+                        (destructuring-bind (cipher-name ckey mode iv mac-name mkey mparam) args
+                          (let ((cipher (crypto:make-cipher cipher-name
+                                                            :key ckey
+                                                            :mode mode
+                                                            :initialization-vector iv))
+                                (mac (if mparam
+                                         (crypto:make-mac mac-name mkey mparam)
+                                         (crypto:make-mac mac-name mkey))))
+                            (list :cipher cipher :mac mac))))))
+         (ae (apply #'crypto:make-authenticated-encryption-mode mode-name parameters))
+         (ciphertext (crypto:encrypt-message ae input :associated-data ad)))
+    (when (or (mismatch ciphertext output)
+              (mismatch (crypto:produce-tag ae) tag))
+      (error "encryption failed for ~A, input ~A, output ~A" mode-name input output))
+    (setf parameters (case mode-name
+                       ((:gcm gcm crypto:gcm :eax eax crypto:eax)
+                        parameters)
+                       ((:etm etm crypto:etm)
+                        (destructuring-bind (cipher-name ckey mode iv mac-name mkey mparam) args
+                          (let ((cipher (crypto:make-cipher cipher-name
+                                                            :key ckey
+                                                            :mode mode
+                                                            :initialization-vector iv))
+                                (mac (if mparam
+                                         (crypto:make-mac mac-name mkey mparam)
+                                         (crypto:make-mac mac-name mkey))))
+                            (list :cipher cipher :mac mac))))))
+    (apply #'reinitialize-instance ae :tag tag parameters)
+    (let ((plaintext (crypto:decrypt-message ae output :associated-data ad)))
+      (when (or (mismatch plaintext input)
+                (mismatch (crypto:produce-tag ae) tag))
+        (error "decryption failed for ~A, input ~A, output ~A" mode-name input output)))))
+
+(defun aead-test/incremental (mode-name input ad output tag &rest args)
+  (let* ((parameters (case mode-name
+                       ((:gcm gcm crypto:gcm :eax eax crypto:eax)
+                        (list :cipher-name (car args)
+                              :key (cadr args)
+                              :initialization-vector (caddr args)))
+                       ((:etm etm crypto:etm)
+                        (destructuring-bind (cipher-name ckey mode iv mac-name mkey mparam) args
+                          (let ((cipher (crypto:make-cipher cipher-name
+                                                            :key ckey
+                                                            :mode mode
+                                                            :initialization-vector iv))
+                                (mac (if mparam
+                                         (crypto:make-mac mac-name mkey mparam)
+                                         (crypto:make-mac mac-name mkey))))
+                            (list :cipher cipher :mac mac))))))
+         (ae (apply #'crypto:make-authenticated-encryption-mode mode-name parameters))
+         (plaintext (make-array (length input) :element-type '(unsigned-byte 8)))
+         (ciphertext (make-array (length output) :element-type '(unsigned-byte 8))))
+    (dotimes (i (length ad))
+      (crypto:process-associated-data ae ad :start i :end (1+ i)))
+    (dotimes (i (length input))
+      (crypto:encrypt ae input ciphertext
+                      :plaintext-start i :plaintext-end (1+ i)
+                      :ciphertext-start i
+                      :handle-final-block (= i (1- (length input)))))
+    (when (or (mismatch ciphertext output)
+              (mismatch (crypto:produce-tag ae) tag))
+      (error "encryption failed for ~A, input ~A, output ~A" mode-name input output))
+    (setf parameters (case mode-name
+                       ((:gcm gcm crypto:gcm :eax eax crypto:eax)
+                        parameters)
+                       ((:etm etm crypto:etm)
+                        (destructuring-bind (cipher-name ckey mode iv mac-name mkey mparam) args
+                          (let ((cipher (crypto:make-cipher cipher-name
+                                                            :key ckey
+                                                            :mode mode
+                                                            :initialization-vector iv))
+                                (mac (if mparam
+                                         (crypto:make-mac mac-name mkey mparam)
+                                         (crypto:make-mac mac-name mkey))))
+                            (list :cipher cipher :mac mac))))))
+    (apply #'reinitialize-instance ae :tag tag parameters)
+    (dotimes (i (length ad))
+      (crypto:process-associated-data ae ad :start i :end (1+ i)))
+    (dotimes (i (length output))
+      (crypto:decrypt ae output plaintext
+                      :ciphertext-start i :ciphertext-end (1+ i)
+                      :plaintext-start i
+                      :handle-final-block (= i (1- (length output)))))
+    (when (or (mismatch plaintext input)
+              (mismatch (crypto:produce-tag ae) tag))
+      (error "decryption failed for ~A, input ~A, output ~A" mode-name input output))))
+
+(defparameter *authenticated-encryption-tests*
+  (list (cons :aead-test 'aead-test)))
+
+(defparameter *authenticated-encryption-incremental-tests*
+  (list (cons :aead-test 'aead-test/incremental)))

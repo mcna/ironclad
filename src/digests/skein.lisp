@@ -2,6 +2,7 @@
 ;;;; skein.lisp -- implementation of the Skein hash functions
 
 (in-package :crypto)
+(in-ironclad-readtable)
 
 
 ;;; Parameter identifiers
@@ -166,22 +167,18 @@
 
 ;;; This function is called a lot by skein-ubi,
 ;;; so we try to optimize it for speed.
+(declaim (inline skein-increment-counter))
 (defun skein-increment-counter (tweak n)
   (declare (type (simple-array (unsigned-byte 64) (2)) tweak)
            (type (unsigned-byte 32) n)
            #.(burn-baby-burn))
-  (let ((x (ldb (byte 32 0) (aref tweak 0)))
-        (y (ldb (byte 32 32) (aref tweak 0)))
-        (z (ldb (byte 32 0) (aref tweak 1))))
-    (declare (type (unsigned-byte 64) x y z))
-    (setf x (mod64+ x n)
-          y (mod64+ y (ldb (byte 32 32) x))
-          z (mod64+ z (ldb (byte 32 32) y)))
-    (setf (ldb (byte 32 0) (aref tweak 0)) (ldb (byte 32 0) x)
-          (ldb (byte 32 32) (aref tweak 0)) (ldb (byte 32 0) y))
-    (setf (ldb (byte 32 0) (aref tweak 1)) (ldb (byte 32 0) z))
+  (let* ((x (mod64+ (aref tweak 0) n))
+         (y (mod32+ (logand (aref tweak 1) #xffffffff) (if (< x n) 1 0))))
+    (declare (type (unsigned-byte 64) x)
+             (type (unsigned-byte 32) y))
+    (setf (aref tweak 0) x
+          (ldb (byte 32 0) (aref tweak 1)) y)
     (values)))
-
 
 (defun skein-update-tweak (tweak &key
                                    (first nil first-p)
@@ -236,6 +233,7 @@
 
 ;;; This function is called a lot by skein-ubi,
 ;;; so we try to optimize it for speed.
+(declaim (inline skein-update-cipher))
 (defun skein-update-cipher (block-length cipher-key cipher-tweak key tweak)
   (declare (type fixnum block-length)
            (type (simple-array (unsigned-byte 64) (*)) cipher-key)
@@ -263,9 +261,10 @@
 
 (defun skein-ubi (state message start end &optional final)
   (declare (type (simple-array (unsigned-byte 8) (*)) message)
-           (type integer start end)
+           (type index start end)
            #.(burn-baby-burn))
   (let* ((cipher (skein-cipher state))
+         (encryption-function (encrypt-function cipher))
          (cipher-key (threefish-key cipher))
          (cipher-tweak (threefish-tweak cipher))
          (block-length (block-length state))
@@ -275,16 +274,18 @@
          (buffer-length (skein-buffer-length state))
          (message-start start)
          (message-length (- end start))
-         (ciphertext (make-array block-length
+         (ciphertext (make-array 128
                                  :element-type '(unsigned-byte 8)
                                  :initial-element 0))
          (n 0))
     (declare (type (simple-array (unsigned-byte 64) (*)) cipher-key)
              (type (simple-array (unsigned-byte 64) (3)) cipher-tweak)
-             (type (simple-array (unsigned-byte 8) (*)) value buffer ciphertext)
+             (type (simple-array (unsigned-byte 8) (*)) value buffer)
+             (type (simple-array (unsigned-byte 8) (128)) ciphertext)
+             (dynamic-extent ciphertext)
              (type (simple-array (unsigned-byte 64) (2)) tweak)
-             (type fixnum block-length buffer-length n)
-             (type integer message-start message-length))
+             (type (integer 0 128) block-length buffer-length n)
+             (type index message-start message-length))
 
     ;; Try to fill the buffer with the new data
     (setf n (min message-length (- block-length buffer-length)))
@@ -306,9 +307,9 @@
       (unless final
         (skein-increment-counter tweak block-length))
       (skein-update-cipher block-length cipher-key cipher-tweak value tweak)
-      (encrypt cipher buffer ciphertext)
+      (funcall encryption-function cipher buffer 0 ciphertext 0)
       (skein-update-tweak tweak :first nil)
-      (xor-block block-length ciphertext buffer 0 value 0)
+      (xor-block block-length ciphertext 0 buffer 0 value 0)
       (setf buffer-length 0))
 
     ;; Process data in message
@@ -316,10 +317,8 @@
       (loop until (<= message-length block-length) do
         (skein-increment-counter tweak block-length)
         (skein-update-cipher block-length cipher-key cipher-tweak value tweak)
-        (encrypt cipher message ciphertext
-                 :plaintext-start message-start
-                 :plaintext-end (+ message-start block-length))
-        (xor-block block-length ciphertext message message-start value 0)
+        (funcall encryption-function cipher message message-start ciphertext 0)
+        (xor-block block-length ciphertext 0 message message-start value 0)
         (incf message-start block-length)
         (decf message-length block-length)))
 
@@ -355,15 +354,9 @@
                            :element-type '(unsigned-byte 8)
                            :initial-element 0)))
          ((= i noutputs)
-          (etypecase digest
-            ((simple-array (unsigned-byte 8) (*))
-             (progn
-               (replace digest output :start1 digest-start :end2 digest-length)
-               digest))
-            (cl:null
-             (make-array digest-length
-                         :element-type '(unsigned-byte 8)
-                         :initial-contents (subseq output 0 digest-length)))))
+          (progn
+            (replace digest output :start1 digest-start :end2 digest-length)
+            digest))
       (replace msg (integer-to-octets i :n-bits 64 :big-endian nil) :end2 8)
       (replace (skein-value state) value)
       (skein-update-tweak tweak :first t :final t :type +skein-out+ :position 8)
@@ -485,7 +478,7 @@
   (%reinitialize-skein256 state 224))
 
 (defmethod copy-digest ((state skein256) &optional copy)
-  (declare (type (or cl:null skein256) copy))
+  (check-type copy (or null skein256))
   (let ((copy (if copy
                   copy
                   (etypecase state
@@ -645,7 +638,7 @@
   (%reinitialize-skein512 state 384))
 
 (defmethod copy-digest ((state skein512) &optional copy)
-  (declare (type (or cl:null skein512) copy))
+  (declare (type (or null skein512) copy))
   (let ((copy (if copy
                   copy
                   (etypecase state
@@ -769,7 +762,7 @@
   (%reinitialize-skein1024 state 512))
 
 (defmethod copy-digest ((state skein1024) &optional copy)
-  (declare (type (or cl:null skein1024) copy))
+  (declare (type (or null skein1024) copy))
   (let ((copy (if copy
                   copy
                   (etypecase state

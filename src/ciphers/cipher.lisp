@@ -12,15 +12,7 @@
 (defclass stream-cipher (cipher)
   ())
 
-(defun encrypt (cipher plaintext ciphertext
-                &key (plaintext-start 0) plaintext-end
-                (ciphertext-start 0) handle-final-block)
-  "Encrypt the data in PLAINTEXT between PLAINTEXT-START and
-PLAINTEXT-END according to CIPHER.  Places the encrypted data in
-CIPHERTEXT, beginning at CIPHERTEXT-START.  Less data than
- (- PLAINTEXT-END PLAINTEXT-START) may be encrypted, depending on the
-alignment constraints of CIPHER and the amount of space available in
-CIPHERTEXT."
+(defmethod encrypt ((cipher cipher) plaintext ciphertext &key (plaintext-start 0) plaintext-end (ciphertext-start 0) handle-final-block &allow-other-keys)
   (check-type plaintext vector)
   (let ((plaintext-end (or plaintext-end (length plaintext))))
     (funcall (slot-value (mode cipher) 'encrypt-function)
@@ -28,15 +20,7 @@ CIPHERTEXT."
              plaintext-start plaintext-end ciphertext-start
              handle-final-block)))
 
-(defun decrypt (cipher ciphertext plaintext
-                &key (ciphertext-start 0) ciphertext-end
-                (plaintext-start 0) handle-final-block)
-  "Decrypt the data in CIPHERTEXT between CIPHERTEXT-START and
-CIPHERTEXT-END according to CIPHER.  Places the decrypted data in
-PLAINTEXT, beginning at PLAINTEXT-START.  Less data than
- (- CIPHERTEXT-END CIPHERTEXT-START) may be encrypted, depending on the
-alignment constraints of CIPHER and the amount of space available in
-PLAINTEXT."
+(defmethod decrypt ((cipher cipher) ciphertext plaintext &key (ciphertext-start 0) ciphertext-end (plaintext-start 0) handle-final-block &allow-other-keys)
   (check-type ciphertext vector)
   (let ((ciphertext-end (or ciphertext-end (length ciphertext))))
     (funcall (slot-value (mode cipher) 'decrypt-function)
@@ -165,7 +149,7 @@ PLAINTEXT."
 ;;; in the decryptor, and once in the DEFCIPHER form.  It would be nice
 ;;; if there was one single place to put everything.
 (defmacro define-block-encryptor (algorithm blocksize &body body)
-  `(defun ,(intern (format nil "~A-~A" algorithm '#:encrypt-block))
+  `(defun ,(symbolicate algorithm '#:-encrypt-block)
     (context plaintext plaintext-start ciphertext ciphertext-start)
     (declare (optimize (speed 3) (debug 0) (space 0)))
     (declare (type simple-octet-vector plaintext ciphertext)
@@ -174,7 +158,7 @@ PLAINTEXT."
     ,@body))
 
 (defmacro define-block-decryptor (algorithm blocksize &body body)
-  `(defun ,(intern (format nil "~A-~A" algorithm '#:decrypt-block))
+  `(defun ,(symbolicate algorithm '#:-decrypt-block)
     (context ciphertext ciphertext-start plaintext plaintext-start)
     (declare (optimize (speed 3) (debug 0) (space 0)))
     (declare (type simple-octet-vector ciphertext plaintext)
@@ -183,30 +167,23 @@ PLAINTEXT."
     ,@body))
 
 (defmacro define-stream-cryptor (algorithm &body body)
-  `(defun ,(intern (format nil "~A-~A" algorithm '#:crypt))
+  `(defun ,(symbolicate algorithm '#:-crypt)
        (context plaintext plaintext-start ciphertext ciphertext-start length)
      (declare (optimize (speed 3) (debug 0) (space 0)))
      (declare (type simple-octet-vector plaintext ciphertext))
      (declare (type index plaintext-start ciphertext-start length))
      ,@body))
 
-(defgeneric verify-key (cipher key)
-  (:documentation "Return T if KEY is a valid encryption key for CIPHER."))
-
 ;; Catch various errors.
 (defmethod verify-key (cipher key)
   ;; check the key first
-  (when (cl:null key)
+  (when (null key)
     (error 'key-not-supplied :cipher cipher))
   (unless (typep key '(vector (unsigned-byte 8)))
     (error 'type-error :datum key :expected-type '(vector (unsigned-byte 8))))
   ;; hmmm, the key looks OK.  what about the cipher?
   (unless (member cipher (list-all-ciphers))
     (error 'unsupported-cipher :name cipher)))
-
-(defgeneric schedule-key (cipher key)
-  (:documentation "Schedule KEY for CIPHER, filling CIPHER with any
-round keys, etc. needed for encryption and decryption."))
 
 (defmethod schedule-key :before ((cipher cipher) key)
   (verify-key cipher key))
@@ -230,26 +207,12 @@ round keys, etc. needed for encryption and decryption."))
 (defun (setf %find-cipher) (cipher-info name)
   (setf (get (massage-symbol name) '%cipher-info) cipher-info))
 
-(defgeneric key-lengths (cipher)
-  (:documentation "Return a list of possible lengths of a key for
-CIPHER.  CIPHER may either be a cipher name as accepted by
-MAKE-CIPHER or a cipher object as returned by MAKE-CIPHER.  NIL
-is returned if CIPHER does not name a known cipher or is not a
-cipher object."))
-
 (defmethod key-lengths (cipher)
   (let ((cipher-info (%find-cipher cipher)))
     (and cipher-info (%key-lengths cipher-info))))
 
 (defmethod key-lengths ((cipher cipher))
   (key-lengths (class-name (class-of cipher))))
-
-(defgeneric block-length (cipher)
-  (:documentation "Return the number of bytes in an encryption or
-decryption block for CIPHER.  CIPHER may either be a cipher name
-as accepted by MAKE-CIPHER or a cipher object as returned by
-MAKE-CIPHER.  NIL is returned if CIPHER does not name a known
-cipher or is not a cipher object."))
 
 (defmethod block-length ((cipher symbol))
   (let ((cipher-info (%find-cipher (massage-symbol cipher))))
@@ -276,12 +239,12 @@ cipher or is not a cipher object."))
 (defun list-all-ciphers ()
   (loop for symbol being each external-symbol of (find-package :ironclad)
      if (%find-cipher symbol)
-     collect symbol into ciphers
+     collect (intern (symbol-name symbol) :keyword) into ciphers
      finally (return (sort ciphers #'string<))))
 
 (defun cipher-supported-p (name)
   "Return T if the cipher NAME is supported as an argument to MAKE-CIPHER."
-  (not (cl:null (%find-cipher name))))
+  (not (null (%find-cipher name))))
 
 (defun acceptable-key-lengths* (key-length-spec)
   (ecase (car key-length-spec)
@@ -292,7 +255,7 @@ cipher or is not a cipher object."))
                  (if (= increment 1)
                      `(<= ,low length ,high)
                      ;; Punt.  It'd be a weird cipher implemented otherwise.
-                     (error "Need to implement the (/= INCREMENT 1) case"))))))
+                     (error 'ironclad-error :format-control "Need to implement the (/= INCREMENT 1) case"))))))
 
 (defun acceptable-key-lengths (key-length-spec)
   (ecase (car key-length-spec)
@@ -306,7 +269,7 @@ cipher or is not a cipher object."))
     `(defmethod verify-key ((cipher ,name) (key vector))
       (check-type key (array (unsigned-byte 8) (*)))
       (let ((length (length key)))
-        (cond 
+        (cond
           (,(acceptable-key-lengths* key-length-spec) (copy-seq key))
           (t (error 'invalid-key-length
                     :cipher ',name
@@ -354,49 +317,49 @@ cipher or is not a cipher object."))
                (:encrypt-function
                 (if (not encrypt-function)
                     (setf encrypt-function value)
-                    (error "Specified :ENCRYPT-FUNCTION multiple times.")))
+                    (error 'ironclad-error :format-control "Specified :ENCRYPT-FUNCTION multiple times.")))
                (:decrypt-function
                 (if (not decrypt-function)
                     (setf decrypt-function value)
-                    (error "Specified :DECRYPT-FUNCTION multiple times.")))
+                    (error 'ironclad-error :format-control "Specified :DECRYPT-FUNCTION multiple times.")))
                (:crypt-function
                 (if (not crypt-function)
                     (setf crypt-function value)
-                    (error "Specified :CRYPT-FUNCTION multiple times.")))
+                    (error 'ironclad-error :format-control "Specified :CRYPT-FUNCTION multiple times.")))
                (:mode
                 (setf mode value))
                (:block-length
                 (cond
                   (block-length
-                   (error "Specified :BLOCK-LENGTH multiple times."))
+                   (error 'ironclad-error :format-control "Specified :BLOCK-LENGTH multiple times."))
                   ((or (not (integerp value))
                        (not (plusp value)))
-                   (error ":BLOCK-LENGTH must be a positive, integral number."))
+                   (error 'ironclad-error :format-control ":BLOCK-LENGTH must be a positive, integral number."))
                   (t
                    (setf block-length value))))
                (:key-length
                 (cond
                   (key-length-spec
-                   (error "Specified :KEY-LENGTH multiple times."))
+                   (error 'ironclad-error :format-control "Specified :KEY-LENGTH multiple times."))
                   ((not (consp value))
-                   (error ":KEY-LENGTH value must be a list."))
+                   (error 'ironclad-error :format-control ":KEY-LENGTH value must be a list."))
                   ((and (not (eq :fixed (car value)))
                         (not (eq :variable (car value))))
-                   (error "First element of :KEY-LENGTH spec must be either :FIXED or :VARIABLE."))
+                   (error 'ironclad-error :format-control "First element of :KEY-LENGTH spec must be either :FIXED or :VARIABLE."))
                   ((eq :fixed (car value))
                    (if (and (cdr value)
                             (every #'integerp (cdr value))
                             (every #'plusp (cdr value)))
                        (setf key-length-spec value)
                        ;;; FIXME: better error message
-                       (error "bad :FIXED specification for :KEY-LENGTH.")))
+                       (error 'ironclad-error :format-control "bad :FIXED specification for :KEY-LENGTH.")))
                   ((eq :variable (car value))
-                   (if (and (cl:null (nthcdr 4 value))
+                   (if (and (null (nthcdr 4 value))
                             (every #'integerp (cdr value))
                             (every #'plusp (cdr value))
                             (< (cadr value) (caddr value)))
                        (setf key-length-spec value)
-                       (error "bad :VARIABLE specification for :KEY-LENGTH."))))))
+                       (error 'ironclad-error :format-control "bad :VARIABLE specification for :KEY-LENGTH."))))))
           finally (cond
                     ((and (eq mode :block) key-length-spec encrypt-function decrypt-function)
                      (return
@@ -410,4 +373,4 @@ cipher or is not a cipher object."))
                           ,(generate-common-cipher-methods name 1 key-length-spec)
                           ,(generate-stream-cipher-forms name key-length-spec crypt-function))))
                     (t
-                     (error "Didn't specify all required fields for DEFCIPHER"))))))
+                     (error 'ironclad-error :format-control "Didn't specify all required fields for DEFCIPHER"))))))

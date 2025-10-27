@@ -38,10 +38,16 @@
                                     #x1F83D9ABFB41BD6B
                                     #x5BE0CD19137E2179))))
 
-(defun blake2-make-initial-state (output-length)
-  (assert (<= output-length 64))
+(defun blake2-make-initial-state (output-length &optional (key-length 0))
+  (when (> output-length 64)
+    (error 'ironclad-error :format-control "The output length must be at most 64 bytes."))
+  (when (> key-length 64)
+    (error 'ironclad-error :format-control "The key length must be at most 64 bytes."))
   (let ((state (copy-seq +blake2-iv+)))
-    (setf (aref state 0) (logxor (aref state 0) #x01010000 output-length))
+    (setf (aref state 0) (logxor (aref state 0)
+                                 #x01010000
+                                 (ash key-length 8)
+                                 output-length))
     state))
 
 
@@ -98,8 +104,7 @@
 
       ;; Get input data as 64-bit little-endian integers
       (dotimes-unrolled (i 16)
-        (dotimes-unrolled (j 8)
-          (setf (ldb (byte 8 (* j 8)) (aref m i)) (aref input (+ start (* i 8) j)))))
+        (setf (aref m i) (ub64ref/le input (+ start (* i 8)))))
 
       ;; Mixing rounds
       (dotimes-unrolled (i +blake2-rounds+)
@@ -169,7 +174,7 @@
   state)
 
 (defmethod copy-digest ((state blake2) &optional copy)
-  (declare (type (or cl:null blake2) copy))
+  (check-type copy (or null blake2))
   (let ((copy (if copy
                   copy
                   (etypecase state
@@ -255,14 +260,9 @@
     ;; Get output
     (let ((output (make-array +blake2-block-size+ :element-type '(unsigned-byte 8) :initial-element 0)))
       (dotimes (i 8)
-        (dotimes (j 8)
-          (setf (aref output (+ (* i 8) j)) (ldb (byte 8 (* j 8)) (aref blake2-state i)))))
-      (etypecase digest
-        ((simple-array (unsigned-byte 8) (*))
-         (replace digest output :start1 digest-start :end2 digest-length)
-         digest)
-        (cl:null
-         (subseq output 0 digest-length))))))
+        (setf (ub64ref/le output (* i 8)) (aref blake2-state i)))
+      (replace digest output :start1 digest-start :end2 digest-length)
+      digest)))
 
 (define-digest-updater blake2
   (blake2-update state sequence start end nil))

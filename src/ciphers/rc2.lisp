@@ -2,6 +2,7 @@
 ;;;; rc2.lisp -- implementation of the RC2 cipher algorithm from RFC 2268
 
 (in-package :crypto)
+(in-ironclad-readtable)
 
 ;;; RC2 accepts a 1-byte to 128-byte key.  But it also lets you specify
 ;;; an "effective key length" in bits, which effectively lets you have a
@@ -79,100 +80,100 @@
     ;; If we wanted to really be a speed demon, we'd specialize this.
     (dotimes (i 64 scheduled-key)
       (setf (aref scheduled-key i)
-            (nibbles:ub16ref/le lbuf (* i 2))))))
+            (ub16ref/le lbuf (* i 2))))))
 
 (macrolet ((mix (index)
              (loop for i from 0 below 4
-                   collect (let ((x0 (intern (format nil "~A~D" '#:r i)))
-                                 (x1 (intern (format nil "~A~D" '#:r (mod (- i 1) 4))))
-                                 (x2 (intern (format nil "~A~D" '#:r (mod (- i 2) 4))))
-                                 (x3 (intern (format nil "~A~D" '#:r (mod (- i 3) 4)))))
+                   collect (let ((x0 (symbolicate '#:r i))
+                                 (x1 (symbolicate '#:r (mod (- i 1) 4)))
+                                 (x2 (symbolicate '#:r (mod (- i 2) 4)))
+                                 (x3 (symbolicate '#:r (mod (- i 3) 4))))
                              `(progn
-                               (setf ,x0 (ldb (byte 16 0)
-                                          (+ ,x0
-                                             (aref round-keys (+ (* 4 ,index) ,i))
-                                             (logand ,x1 ,x2)
-                                             (logandc1 ,x1 ,x3))))
-                               (setf ,x0 (rol16 ,x0 ,(case i
-                                                           (0 1)
-                                                           (1 2)
-                                                           (2 3)
-                                                           (3 5)))))) into forms
+                                (setf ,x0 (ldb (byte 16 0)
+                                               (+ ,x0
+                                                  (logand ,x1 ,x2)
+                                                  (aref round-keys (+ (* 4 ,index) ,i))
+                                                  (logandc1 ,x1 ,x3))))
+                                (setf ,x0 (rol16 ,x0 ,(case i
+                                                        (0 1)
+                                                        (1 2)
+                                                        (2 3)
+                                                        (3 5)))))) into forms
                    finally (return `(progn ,@forms))))
            (mash ()
              (loop for i from 0 below 4
-                   collect (let ((x0 (intern (format nil "~A~D" '#:r i)))
-                                 (x1 (intern (format nil "~A~D" '#:r (mod (- i 1) 4)))))
+                   collect (let ((x0 (symbolicate '#:r i))
+                                 (x1 (symbolicate '#:r (mod (- i 1) 4))))
                              `(setf ,x0 (ldb (byte 16 0)
-                                         (+ ,x0 (aref round-keys (ldb (byte 6 0) ,x1)))))) into forms
+                                             (+ ,x0 (aref round-keys (ldb (byte 6 0) ,x1)))))) into forms
                    finally (return `(progn ,@forms))))
            (rmix (index)
              (loop for i from 0 below 4
-                   collect (let ((x0 (intern (format nil "~A~D" '#:r i)))
-                                 (x1 (intern (format nil "~A~D" '#:r (mod (- i 1) 4))))
-                                 (x2 (intern (format nil "~A~D" '#:r (mod (- i 2) 4))))
-                                 (x3 (intern (format nil "~A~D" '#:r (mod (- i 3) 4)))))
+                   collect (let ((x0 (symbolicate '#:r i))
+                                 (x1 (symbolicate '#:r (mod (- i 1) 4)))
+                                 (x2 (symbolicate '#:r (mod (- i 2) 4)))
+                                 (x3 (symbolicate '#:r (mod (- i 3) 4))))
                              `(progn
-                               (setf ,x0 (rol16 ,x0 ,(case i
-                                                           (0 15)
-                                                           (1 14)
-                                                           (2 13)
-                                                           (3 11))))
-                               (setf ,x0 (ldb (byte 16 0)
-                                          (- ,x0
-                                             (aref round-keys (+ (* 4 ,index) ,i))
-                                             (logand ,x1 ,x2)
-                                             (logandc1 ,x1 ,x3)))))) into forms
+                                (setf ,x0 (rol16 ,x0 ,(case i
+                                                        (0 15)
+                                                        (1 14)
+                                                        (2 13)
+                                                        (3 11))))
+                                (setf ,x0 (ldb (byte 16 0)
+                                               (- ,x0
+                                                  (aref round-keys (+ (* 4 ,index) ,i))
+                                                  (logand ,x1 ,x2)
+                                                  (logandc1 ,x1 ,x3)))))) into forms
                    finally (return `(progn ,@(nreverse forms)))))
            (rmash ()
              (loop for i from 0 below 4
-                   collect (let ((x0 (intern (format nil "~A~D" '#:r (mod i 4))))
-                                 (x1 (intern (format nil "~A~D" '#:r (mod (- i 1) 4)))))
+                   collect (let ((x0 (symbolicate '#:r i))
+                                 (x1 (symbolicate '#:r (mod (- i 1) 4))))
                              `(setf ,x0 (ldb (byte 16 0)
-                                         (- ,x0 (aref round-keys (ldb (byte 6 0) ,x1)))))) into forms
+                                             (- ,x0 (aref round-keys (ldb (byte 6 0) ,x1)))))) into forms
                    finally (return `(progn ,@(nreverse forms))))))
-(define-block-encryptor rc2 8
-  (let ((round-keys (round-keys context)))
-    (declare (type rc2-round-keys round-keys))
-    (with-words ((r0 r1 r2 r3) plaintext plaintext-start
-                 :size 2 :big-endian nil)
-      #.(loop for i from 0 below 18
-              collect (ecase i
-                        ((0 1 2 3 4
-                            6 7 8 9 10 11
-                            13 14 15 16 17)
-                         ;; mixing round
-                         `(mix ,(cond
-                                 ((<= i 4) i)
-                                 ((<= 6 i 11) (- i 1))
-                                 ((<= 13 i 17) (- i 2)))))
-                        ((5 12)
-                         ;; mashing round
-                         `(mash))) into forms
-              finally (return `(progn ,@forms)))
-      (store-words ciphertext ciphertext-start r0 r1 r2 r3))))
+  (define-block-encryptor rc2 8
+    (let ((round-keys (round-keys context)))
+      (declare (type rc2-round-keys round-keys))
+      (with-words ((r0 r1 r2 r3) plaintext plaintext-start
+                   :size 2 :big-endian nil)
+        #.(loop for i from 0 below 18
+                collect (ecase i
+                          ((0 1 2 3 4
+                              6 7 8 9 10 11
+                              13 14 15 16 17)
+                           ;; mixing round
+                           `(mix ,(cond
+                                    ((<= i 4) i)
+                                    ((<= 6 i 11) (- i 1))
+                                    ((<= 13 i 17) (- i 2)))))
+                          ((5 12)
+                           ;; mashing round
+                           `(mash))) into forms
+                finally (return `(progn ,@forms)))
+        (store-words ciphertext ciphertext-start r0 r1 r2 r3))))
 
-(define-block-decryptor rc2 8
-  (let ((round-keys (round-keys context)))
-    (declare (type rc2-round-keys round-keys))
-    (with-words ((r0 r1 r2 r3) ciphertext ciphertext-start
-                 :size 2 :big-endian nil)
-      #.(loop for i from 0 below 18
-              collect (ecase i
-                        ((0 1 2 3 4
-                            6 7 8 9 10 11
-                            13 14 15 16 17)
-                         ;; mixing round
-                         `(rmix ,(cond
-                                  ((<= i 4) i)
-                                  ((<= 6 i 11) (- i 1))
-                                  ((<= 13 i 17) (- i 2)))))
-                        ((5 12)
-                         ;; mashing round
-                         `(rmash))) into forms
-              finally (return `(progn ,@(nreverse forms))))
-      (store-words plaintext plaintext-start r0 r1 r2 r3))))
-) ; MACROLET
+  (define-block-decryptor rc2 8
+    (let ((round-keys (round-keys context)))
+      (declare (type rc2-round-keys round-keys))
+      (with-words ((r0 r1 r2 r3) ciphertext ciphertext-start
+                   :size 2 :big-endian nil)
+        #.(loop for i from 0 below 18
+                collect (ecase i
+                          ((0 1 2 3 4
+                              6 7 8 9 10 11
+                              13 14 15 16 17)
+                           ;; mixing round
+                           `(rmix ,(cond
+                                     ((<= i 4) i)
+                                     ((<= 6 i 11) (- i 1))
+                                     ((<= 13 i 17) (- i 2)))))
+                          ((5 12)
+                           ;; mashing round
+                           `(rmash))) into forms
+                finally (return `(progn ,@(nreverse forms))))
+        (store-words plaintext plaintext-start r0 r1 r2 r3))))
+  ) ; MACROLET
 
 (defmethod schedule-key ((cipher rc2) key)
   (let* ((effective-key-length (* (length key) 8))
